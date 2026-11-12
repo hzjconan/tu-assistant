@@ -147,3 +147,13 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# tu-assistant: project documents and generated artifacts (never commit)
+inputs/
+artifacts/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
