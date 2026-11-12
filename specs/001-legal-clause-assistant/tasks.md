@@ -77,7 +77,7 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [ ] T024 [P] 实现运行时模型客户端 `src/tu_assistant/runtime/client.py`：OpenAI 兼容 Chat Completions；启动时校验 `runtime.model_endpoint` 主机在 `runtime.allowed_hosts` 内，否则拒绝启动（宪章原则 III、IV）
 - [ ] T025 [P] 实现 `tu serve model --exp <exp_id>`：封装 `mlx_lm.server`，加载基座 + 适配器，只监听 127.0.0.1
 - [ ] T026 实现会话与接口 `src/tu_assistant/chat/session.py`、`src/tu_assistant/chat/assistant.py`：`Assistant` 协议、`SessionConfig`、`Reply`（contracts/system-interface.md）；会话只存内存，`close` 后释放（FR-009）
-- [ ] T027 实现对话编排 `src/tu_assistant/chat/orchestrator.py`：拼装 system prompt（含 `max_questions_per_turn`）、调用模型、出处校验、统计追问问题数（contracts/citation-format.md §5）、评测模式下返回 `raw_content`（依赖 T021、T024、T026）
+- [ ] T027 实现对话编排 `src/tu_assistant/chat/orchestrator.py`：拼装 system prompt（含 `max_questions_per_turn`）、调用模型、出处校验、统计追问问题数（contracts/citation-format.md §5）、按已确认 ClauseRelation 对未引用的关联条款做确定性补全提示（FR-019，research R6）、评测模式下返回 `raw_content`（依赖 T021、T024、T026）
 - [ ] T028 [P] 单元测试 `tests/unit/test_runtime_isolation.py`：端点白名单校验；静态检查 `chat/`、`runtime/`、`ui/`、`eval/` 不导入外部大模型客户端（quickstart V7）
 
 ### 数据合成与训练框架
@@ -263,7 +263,7 @@ Task: "实现拒答样本合成 src/tu_assistant/synth/refusal.py"
 | T016 | 如需查看原文片段调试切分规则，确认是否同意 |
 | T019 | 确认条款关联关系 |
 | T038、T049、T058 | 审阅评测集用例 |
-| T044 前 | 提供外部大模型 API Key，确认提供方服务条款允许用输出训练模型 |
+| T037 前 | 提供外部大模型 API Key，确认提供方服务条款允许用输出训练模型（T037、T040–T043、T052–T053 均依赖） |
 | T059 后 | 人工评审普法文章（表格） |
 
 ---
