@@ -1,0 +1,18 @@
+# 离线数据合成配置：唯一允许调用外部大模型的模块（src/tu_assistant/synth/）
+external_llm:
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  # API Key 不写在这里！只从环境变量 TU_EXTERNAL_LLM_API_KEY 读取。
+  timeout_s: 120
+  max_retries: 3
+
+# 知识类样本：每条条款改写的倍数（research R4：POC 用 3–5，先跑通不够再加）
+rewrite_factor: 4
+
+# 通用对话样本混入比例，防止模型退化（research R4）
+general_ratio: 0.05
+
+# 提示词版本号，随样本记录进清单，便于追踪与复现
+prompt_version: "v1"
+
+seed: 42

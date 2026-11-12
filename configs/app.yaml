@@ -1,0 +1,19 @@
+# 运行时配置：模型端点、会话行为、知识库版本
+runtime:
+  # 模型服务端点（OpenAI 兼容），由 `tu serve model` 在本机启动
+  model_endpoint: "http://127.0.0.1:8080/v1"
+  # 允许连接的端点主机白名单；不在列表内时拒绝启动（宪章原则 III、IV）
+  allowed_hosts: ["127.0.0.1", "localhost"]
+  model_name: "default"   # 端点上的模型名；mlx_lm.server 一般用 default
+
+session:
+  max_questions_per_turn: 5    # 每轮追问问题数上限（FR-011）
+  default_article_count: 3     # 普法文章默认篇数（FR-028）
+  max_article_count: 10        # 普法文章单次上限（FR-028）
+
+kb:
+  version: null   # 知识库版本（artifacts/kb/<version>.sqlite）；null = 使用最新版本
+
+paths:
+  artifacts: "artifacts"
+  eval_cases: "eval/cases"

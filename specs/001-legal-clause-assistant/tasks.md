@@ -31,12 +31,12 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 **Purpose**: 建立项目骨架与开发环境
 
-- [ ] T001 创建 plan.md 中的目录结构：`configs/`、`configs/train/`、`src/tu_assistant/{kb,citation,chat,runtime,synth,train,eval,ui}/`、`tests/{unit,integration,fixtures}/`、`eval/cases/`，各包含 `__init__.py`
-- [ ] T002 在 `pyproject.toml` 中用 uv 初始化项目（Python 3.12），添加依赖 mlx-lm、typer、pyyaml、python-docx、pdfplumber、beautifulsoup4、openai、gradio，开发依赖 pytest、ruff；锁定版本（`uv.lock`），优先选择发布超过 7 天的版本
-- [ ] T003 [P] 在 `pyproject.toml` 中配置 ruff（lint + format）与 pytest，入口脚本 `tu = "tu_assistant.cli:app"`
-- [ ] T004 [P] 创建配置文件骨架：`configs/app.yaml`（`runtime.model_endpoint`、`runtime.allowed_hosts: [127.0.0.1, localhost]`、`session.max_questions_per_turn: 5`、`session.default_article_count: 3`、`session.max_article_count: 10`）、`configs/synth.yaml`（`external_llm.base_url`、`external_llm.model`、改写倍数 3–5、提示词版本）；API Key 只从环境变量 `TU_EXTERNAL_LLM_API_KEY` 读取
-- [ ] T005 [P] 实现配置加载 `src/tu_assistant/config.py`（读取 YAML，支持命令行覆盖）
-- [ ] T006 [P] 实现产物清单工具 `src/tu_assistant/manifest.py`：为 `artifacts/` 下每个产物写 `manifest.json`（ID、创建时间、输入版本、配置哈希、随机种子），满足宪章原则 VI
+- [x] T001 创建 plan.md 中的目录结构：`configs/`、`configs/train/`、`src/tu_assistant/{kb,citation,chat,runtime,synth,train,eval,ui}/`、`tests/{unit,integration,fixtures}/`、`eval/cases/`，各包含 `__init__.py`
+- [x] T002 在 `pyproject.toml` 中用 uv 初始化项目（Python 3.12），添加依赖 mlx-lm、typer、pyyaml、python-docx、pdfplumber、beautifulsoup4、openai、gradio，开发依赖 pytest、ruff；锁定版本（`uv.lock`），优先选择发布超过 7 天的版本
+- [x] T003 [P] 在 `pyproject.toml` 中配置 ruff（lint + format）与 pytest，入口脚本 `tu = "tu_assistant.cli:app"`
+- [x] T004 [P] 创建配置文件骨架：`configs/app.yaml`（`runtime.model_endpoint`、`runtime.allowed_hosts: [127.0.0.1, localhost]`、`session.max_questions_per_turn: 5`、`session.default_article_count: 3`、`session.max_article_count: 10`）、`configs/synth.yaml`（`external_llm.base_url`、`external_llm.model`、改写倍数 3–5、提示词版本）；API Key 只从环境变量 `TU_EXTERNAL_LLM_API_KEY` 读取
+- [x] T005 [P] 实现配置加载 `src/tu_assistant/config.py`（读取 YAML，支持命令行覆盖）
+- [x] T006 [P] 实现产物清单工具 `src/tu_assistant/manifest.py`：为 `artifacts/` 下每个产物写 `manifest.json`（ID、创建时间、输入版本、配置哈希、随机种子），满足宪章原则 VI
 
 ---
 
