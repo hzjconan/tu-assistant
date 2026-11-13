@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import time
@@ -28,31 +27,44 @@ def run_training(config_path: str | Path, artifacts_dir: str | Path = "artifacts
     log_path = exp_dir / "train.log"
 
     lora = cfg.get("lora", {})
-    cmd = [
-        sys.executable, "-m", "mlx_lm", "lora",
-        "--model", cfg["base_model"],
-        "--train",
-        "--data", str(data_dir),
-        "--adapter-path", str(adapter_dir),
-        "--batch-size", str(cfg.get("batch_size", 1)),
-        "--iters", str(cfg.get("iters", 0)) if cfg.get("iters") else "--epochs",
-    ]
-    if not cfg.get("iters"):
-        cmd += [str(cfg.get("epochs", 2))]
-    cmd += [
-        "--learning-rate", str(cfg.get("learning_rate", 1e-5)),
-        "--num-layers", str(lora.get("num_layers", 16)),
-        "--lora-parameters", json.dumps({
+
+    # epochs → iters：mlx_lm lora 用迭代次数；1 epoch ≈ 训练集条数 / batch
+    train_file = Path(data_dir) / "train.jsonl"
+    n_train = (
+        sum(1 for _ in train_file.open(encoding="utf-8")) if train_file.exists() else 0
+    )
+    iters = cfg.get("iters")
+    if not iters:
+        iters = int(n_train * cfg.get("epochs", 2) / cfg.get("batch_size", 1))
+
+    mlx_cfg = {
+        "model": cfg["base_model"],
+        "data": str(data_dir),
+        "train": True,
+        "fine_tune_type": "lora",
+        "adapter_path": str(adapter_dir),
+        "batch_size": cfg.get("batch_size", 1),
+        "iters": iters,
+        "val_batches": cfg.get("val_batches", 25),
+        "learning_rate": cfg.get("learning_rate", 1e-5),
+        "num_layers": lora.get("num_layers", 16),
+        "lora_parameters": {
             "rank": lora.get("rank", 8),
             "alpha": lora.get("alpha", 16),
             "dropout": lora.get("dropout", 0.0),
             "scale": lora.get("scale", 10.0),
-        }),
-        "--seed", str(cfg.get("seed", 42)),
-        "--max-seq-length", str(cfg.get("max_seq_length", 2048)),
-    ]
-    if cfg.get("grad_checkpoint", True):
-        cmd.append("--grad-checkpoint")
+        },
+        "seed": cfg.get("seed", 42),
+        "max_seq_length": cfg.get("max_seq_length", 2048),
+        "grad_checkpoint": cfg.get("grad_checkpoint", True),
+        "steps_per_report": cfg.get("steps_per_report", 50),
+        "steps_per_eval": cfg.get("steps_per_eval", 200),
+        "save_every": cfg.get("save_every", max(1, iters)),
+    }
+    mlx_cfg_path = exp_dir / "mlx_config.yaml"
+    mlx_cfg_path.write_text(yaml.safe_dump(mlx_cfg), encoding="utf-8")
+
+    cmd = [sys.executable, "-m", "mlx_lm", "lora", "-c", str(mlx_cfg_path)]
 
     started = time.time()
     with log_path.open("w", encoding="utf-8") as log:
@@ -68,7 +80,7 @@ def run_training(config_path: str | Path, artifacts_dir: str | Path = "artifacts
             "base_model": cfg["base_model"],
             "base_license": cfg.get("base_license", ""),
             "batch_size": cfg.get("batch_size"),
-            "iters": cfg.get("iters"),
+            "iters": iters,
             "epochs": cfg.get("epochs"),
             "learning_rate": cfg.get("learning_rate"),
             "lora": lora,

@@ -16,7 +16,12 @@ from ..kb.store import open_kb
 from ..manifest import write_manifest
 from ..runtime.client import ModelClient
 from .cases import EvalCase, load_cases, validate_gold_clauses
-from .metrics import score_case_output
+from .metrics import (
+    intent_score,
+    multi_violation_score,
+    refusal_correct,
+    score_case_output,
+)
 
 
 def _run_case(
@@ -93,7 +98,19 @@ def run_eval(
             "citation_total": score["citation_total"],
             "citation_acc": score["citation_acc"],
             "cited_clause_ids": score["cited_clause_ids"],
+            "relation_completion": score["relation_completion"],
         }
+        if case.category in {"refusal", "false_refusal"}:
+            r["scores"]["refusal_correct"] = refusal_correct(
+                r["final_text"],
+                should_refuse=case.gold.get("should_refuse", True),
+            )
+        if case.category == "multi_violation":
+            r["scores"]["multi_violation"] = multi_violation_score(
+                set(score["cited_clause_ids"]), case.gold.get("violations", [])
+            )
+        if case.category == "intent":
+            r["scores"]["intent"] = intent_score(r["turns"], case.gold)
         results.append(r)
 
     results_path = out_dir / "results.jsonl"

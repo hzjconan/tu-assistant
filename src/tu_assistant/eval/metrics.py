@@ -54,6 +54,60 @@ def citation_accuracy(citations: list) -> dict:
     }
 
 
+REFUSAL_MARKERS = ["超出", "无法回答", "不在", "不支持", "无法提供", "无法生成", "知识范围"]
+
+
+def refusal_correct(text: str, should_refuse: bool) -> bool:
+    """SC-008：范围外应拒答，范围内不得误拒。"""
+    refused = any(m in text for m in REFUSAL_MARKERS)
+    return refused if should_refuse else not refused
+
+
+def multi_violation_score(cited_ids: set[str], gold_violations: list[dict]) -> float | None:
+    """SC-004：多违法行为识别率。
+
+    gold_violations: [{"actor": ..., "clauses": [...]}, ...]。
+    每个 gold 违法行为，其条款集合与输出引用有交集即算识别
+    （主体名以文本匹配另评，POC 从简）。
+    """
+    if not gold_violations:
+        return None
+    hit = sum(
+        1 for v in gold_violations if cited_ids & set(v.get("clauses", []))
+    )
+    return hit / len(gold_violations)
+
+
+def relation_completion_score(cited_ids: set[str], kb_conn) -> float | None:
+    """SC-005：关联条款完整率。
+
+    对每个被引用且有已确认关联的条款，其关联条款也应出现在输出中。
+    """
+    from ..kb.store import confirmed_relations_from
+
+    relations = confirmed_relations_from(kb_conn, list(cited_ids))
+    liability_rels = [r for r in relations if r.relation_type == "liability_for"]
+    if not liability_rels:
+        return None
+    hit = sum(1 for r in liability_rels if r.to_clause_id in cited_ids)
+    return hit / len(liability_rels)
+
+
+def intent_score(turns: list[dict], gold: dict, max_turns: int = 3) -> float | None:
+    """SC-001：3 轮以内正确确认意图的比例。
+
+    gold.intent 为期望意图；按各轮 reply.intent 判定，
+    在 max_turns 轮内首次出现正确意图记 1.0，否则 0.0。
+    """
+    expected = gold.get("intent")
+    if not expected:
+        return None
+    for t in turns[:max_turns]:
+        if t.get("intent") == expected:
+            return 1.0
+    return 0.0
+
+
 def score_case_output(raw_text: str, gold: dict, kb_conn) -> dict:
     """对一条单轮输出打分（条款识别 + 引用指标）。"""
     verified = verify_output(raw_text, kb_conn)
@@ -69,6 +123,7 @@ def score_case_output(raw_text: str, gold: dict, kb_conn) -> dict:
         "citation_complete": complete,
         "citation_total": total,
         "citation_acc": acc,
+        "relation_completion": relation_completion_score(cited, kb_conn),
         "verified_text": verified.text,
         "citations": verified.citations,
     }

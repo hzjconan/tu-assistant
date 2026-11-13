@@ -261,6 +261,69 @@ def synth_evalcases(
     typer.echo(f"候选用例 {result['written']} 条 → {result['path']}")
 
 
+@synth_app.command("sft")
+def synth_sft(
+    kb_version: str | None = typer.Option(None),
+    artifacts: str = typer.Option("artifacts"),
+    synth_config: str = typer.Option("configs/synth.yaml"),
+    eval_cases: str = typer.Option("eval/cases", help="评测集目录（去重用）"),
+    skip_llm: bool = typer.Option(False, help="只用确定性样本（调试用）"),
+) -> None:
+    """生成 SFT 训练样本并构建数据集。"""
+    from .config import load_synth_config
+    from .eval.cases import eval_questions, load_cases
+    from .kb.store import open_kb
+    from .synth import consult, dialogs, knowledge, refusal
+    from .synth.check import CheckStats, check_sample
+    from .synth.llm import from_config
+    from .train.dataset import balance_by_doc, dedup_against_eval, write_dataset
+
+    kb_path = (
+        Path(artifacts, "kb", f"{kb_version}.sqlite")
+        if kb_version
+        else _latest_kb(artifacts)
+    )
+    conn = open_kb(kb_path)
+    cfg = load_synth_config(synth_config)
+    llm = None if skip_llm else from_config(cfg)
+
+    samples = knowledge.generate(conn, llm, cfg)
+    if llm is not None:
+        samples += dialogs.generate(conn, llm, cfg)
+        samples += consult.generate(conn, llm, cfg)
+    samples += refusal.generate(llm, cfg)
+
+    # 检查：引用可解析、条款存在、原文一致（assistant 输出部分）
+    stats = CheckStats()
+    kept = []
+    for s in samples:
+        last = s["messages"][-1]
+        if last["role"] == "assistant" and not check_sample(last["content"], conn, stats):
+            continue
+        kept.append(s)
+    conn.close()
+    typer.echo(f"样本检查：{stats.kept} 保留 / {stats.dropped} 丢弃 {stats.reasons}")
+
+    # 与评测集去重
+    cases_dir = Path(eval_cases)
+    questions = eval_questions(load_cases(cases_dir)) if cases_dir.exists() else []
+    kept, dropped = dedup_against_eval(kept, questions)
+    if dropped:
+        typer.echo(f"与评测集去重：剔除 {len(dropped)} 条")
+
+    kept = balance_by_doc(kept, seed=cfg.get("seed", 42))
+    dataset_id = f"ds-{kb_path.stem}-{len(kept)}"
+    result = write_dataset(
+        kept, dataset_id, Path(artifacts, "datasets"),
+        kb_version=kb_path.stem,
+        generator=llm.meta() if llm else {"provider": "deterministic"},
+        eval_set_version="v1",
+        seed=cfg.get("seed", 42),
+    )
+    typer.echo(f"数据集 {result['dataset_id']}：train {result['train']} / "
+               f"valid {result['valid']}  分布 {result['counts']}")
+
+
 @app.command("train")
 def train(
     config: str = typer.Option(..., "--config", help="训练配置 yaml"),
@@ -309,6 +372,68 @@ def eval_run(
             f"注意：{len(result['gold_issues'])} 个 gold 条款在知识库中不存在",
             fg="yellow",
         )
+
+
+@app.command("chat")
+def chat(
+    config: str = typer.Option("configs/app.yaml"),
+    artifacts: str = typer.Option("artifacts"),
+    kb_version: str | None = typer.Option(None),
+) -> None:
+    """命令行多轮对话；/save <path> 保存最后一轮为 .md，/new 新会话，/quit 退出。"""
+    from .chat.assistant import SessionConfig, TrainedAssistant
+    from .config import get, load_app_config
+    from .kb.store import open_kb
+    from .runtime.client import ModelClient
+
+    cfg = load_app_config(config)
+    kb_path = (
+        Path(artifacts, "kb", f"{kb_version}.sqlite")
+        if kb_version
+        else _latest_kb(artifacts)
+    )
+    conn = open_kb(kb_path)
+    client = ModelClient(
+        get(cfg, "runtime.model_endpoint"),
+        get(cfg, "runtime.allowed_hosts"),
+        model=get(cfg, "runtime.model_name", "default"),
+    )
+    assistant = TrainedAssistant(client, conn)
+    scfg = SessionConfig(
+        max_questions_per_turn=get(cfg, "session.max_questions_per_turn", 5),
+        default_article_count=get(cfg, "session.default_article_count", 3),
+        max_article_count=get(cfg, "session.max_article_count", 10),
+    )
+    sid = assistant.new_session(scfg)
+    typer.echo("进入对话（/save <路径> 保存，/new 新会话，/quit 退出）")
+    while True:
+        try:
+            msg = typer.prompt("你")
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not msg.strip():
+            continue
+        if msg.startswith("/save"):
+            parts = msg.split(maxsplit=1)
+            if len(parts) < 2:
+                typer.echo("用法：/save <路径.md>")
+                continue
+            Path(parts[1]).write_text(
+                assistant.export_markdown(sid), encoding="utf-8"
+            )
+            typer.echo(f"已保存到 {parts[1]}")
+            continue
+        if msg == "/new":
+            assistant.close(sid)
+            sid = assistant.new_session(scfg)
+            typer.echo("新会话")
+            continue
+        if msg in {"/quit", "/exit"}:
+            break
+        reply = assistant.send(sid, msg)
+        typer.echo(f"\n{reply.content}\n")
+    assistant.close(sid)
+    conn.close()
 
 
 if __name__ == "__main__":

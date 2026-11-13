@@ -127,6 +127,11 @@ def write_dataset(
             "dedup_against": eval_set_version,
         },
     )
+
+    latest = Path(out_dir) / "latest"
+    if latest.is_symlink() or latest.exists():
+        latest.unlink()
+    latest.symlink_to(out.name)
     return {
         "dataset_id": dataset_id,
         "dir": str(out),
