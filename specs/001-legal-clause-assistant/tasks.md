@@ -48,52 +48,52 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 ### 知识库：入库与条款切分
 
-- [ ] T007 [P] 实现中文数字与编号转换 `src/tu_assistant/kb/numbers.py`（"第五十一条" → 51，"（三）" → 3，保留原始写法）
-- [ ] T008 [P] 单元测试 `tests/unit/test_numbers.py`：覆盖十、十一、二十、一百零一、一百一十等边界
-- [ ] T009 [P] 实现文档读取 `src/tu_assistant/kb/readers.py`：`.txt`（项目方当前文档均为纯文本）、`.docx`、文本型 `.pdf`、`.html` 统一转为纯文本
-- [ ] T010 实现条款切分 `src/tu_assistant/kb/parse.py`：识别 `第X编/章/节` 标题路径、`第X条`（条）、条内自然段（款）、`（一）（二）`（项）；兼容不以"第X条"组织、而以"一、二、三"分段的通知类文件；输出 Clause 列表（依赖 T007）
-- [ ] T011 [P] 准备测试用公开法条片段 `tests/fixtures/`（自行编写的示例文本，不取自 `inputs/`），含条 / 款 / 项、编号缺口、重复编号、"一、二、三"分段等情形
-- [ ] T012 单元测试 `tests/unit/test_parse.py`：用 T011 的样例验证切分结果与 `parse_warnings`（依赖 T010、T011）
-- [ ] T013 实现知识库存储 `src/tu_assistant/kb/store.py`：SQLite，每次入库生成新 `kb_version` 文件 `artifacts/kb/<kb_version>.sqlite`；表 LegalDocument、Clause、ClauseRelation 字段按 data-model.md；约束："同一文件内 (`article_no`, `paragraph_no`, `item_no`) 唯一"、"同一 `title` 至多一个 `status=current`"
-- [ ] T014 实现入库校验 `src/tu_assistant/kb/validate.py`：编号连续性缺口、重复、空条款写入 `parse_warnings`，生成 `parse_report.md`（只含文件序号、条款数、问题编号，不含条文内容）（FR-005）
-- [ ] T015 实现 `tu kb import <dir>` 与 `tu kb show <title> <article_no>`，入口 `src/tu_assistant/cli.py`（contracts/cli.md）；文件版本信息（`version_label`、`promulgated_on`、`status`）从文件名或文件头解析，缺失时写入问题清单（FR-002）
-- [ ] T016 对 `inputs/project/` 执行入库，**只查看统计输出**（文件数、每文件条款数、问题条目数）；按问题清单调整切分规则。注意最大文件约 329KB，若为汇编类文件需拆分处理。如需查看原文片段，先征得用户同意
+- [x] T007 [P] 实现中文数字与编号转换 `src/tu_assistant/kb/numbers.py`（"第五十一条" → 51，"（三）" → 3，保留原始写法）
+- [x] T008 [P] 单元测试 `tests/unit/test_numbers.py`：覆盖十、十一、二十、一百零一、一百一十等边界
+- [x] T009 [P] 实现文档读取 `src/tu_assistant/kb/readers.py`：`.txt`（项目方当前文档均为纯文本）、`.docx`、文本型 `.pdf`、`.html` 统一转为纯文本
+- [x] T010 实现条款切分 `src/tu_assistant/kb/parse.py`：识别 `第X编/章/节` 标题路径、`第X条`（条）、条内自然段（款）、`（一）（二）`（项）；兼容不以"第X条"组织、而以"一、二、三"分段的通知类文件；输出 Clause 列表（依赖 T007）
+- [x] T011 [P] 准备测试用公开法条片段 `tests/fixtures/`（自行编写的示例文本，不取自 `inputs/`），含条 / 款 / 项、编号缺口、重复编号、"一、二、三"分段等情形
+- [x] T012 单元测试 `tests/unit/test_parse.py`：用 T011 的样例验证切分结果与 `parse_warnings`（依赖 T010、T011）
+- [x] T013 实现知识库存储 `src/tu_assistant/kb/store.py`：SQLite，每次入库生成新 `kb_version` 文件 `artifacts/kb/<kb_version>.sqlite`；表 LegalDocument、Clause、ClauseRelation 字段按 data-model.md；约束："同一文件内 (`article_no`, `paragraph_no`, `item_no`) 唯一"、"同一 `title` 至多一个 `status=current`"
+- [x] T014 实现入库校验 `src/tu_assistant/kb/validate.py`：编号连续性缺口、重复、空条款写入 `parse_warnings`，生成 `parse_report.md`（只含文件序号、条款数、问题编号，不含条文内容）（FR-005）
+- [x] T015 实现 `tu kb import <dir>` 与 `tu kb show <title> <article_no>`，入口 `src/tu_assistant/cli.py`（contracts/cli.md）；文件版本信息（`version_label`、`promulgated_on`、`status`）从文件名或文件头解析，缺失时写入问题清单（FR-002）
+- [x] T016 对 `inputs/project/` 执行入库，**只查看统计输出**（文件数、每文件条款数、问题条目数）；按问题清单调整切分规则。注意最大文件约 329KB，若为汇编类文件需拆分处理。如需查看原文片段，先征得用户同意
 
 ### 条款关联
 
-- [ ] T017 实现规则抽取条款关联 `src/tu_assistant/kb/relations.py`：识别"违反本法第X条""依照第X条"等显式引用，生成 `relations_pending.jsonl`（`origin=rule`，`confirmed=false`）
-- [ ] T018 实现 `tu kb relations extract` / `tu kb relations confirm <file>`；"只有确认过的关联用于训练数据和关联补全指标"（data-model.md）
+- [x] T017 实现规则抽取条款关联 `src/tu_assistant/kb/relations.py`：识别"违反本法第X条""依照第X条"等显式引用，生成 `relations_pending.jsonl`（`origin=rule`，`confirmed=false`）
+- [x] T018 实现 `tu kb relations extract` / `tu kb relations confirm <file>`；"只有确认过的关联用于训练数据和关联补全指标"（data-model.md）
 - [ ] T019 用户人工确认关联关系：在 `artifacts/kb/relations_pending.jsonl` 中逐条标注 `confirmed`，用 `tu kb relations confirm` 导入（说明写在 `docs/relations-confirm-guide.md`）
 
 ### 出处校验层（宪章原则 I）
 
-- [ ] T020 [P] 实现引用解析 `src/tu_assistant/citation/parse.py`：按 contracts/citation-format.md 的正则解析引用块与其后的 `> ` 原文；检测正文裸引用（"第X条"未带完整标记）
-- [ ] T021 实现出处校验 `src/tu_assistant/citation/verify.py`：按编号查知识库，结论 `ok` / `corrected`（替换为知识库原文）/ `not_found`（删除引用块，替换为 `〔此处引用未通过校验，已删除〕`）/ `incomplete`（裸引用，记录）；同时返回校验前原文供评测（research R5）（依赖 T013、T020）
-- [ ] T022 单元测试 `tests/unit/test_citation.py`：四种结论各至少 2 例；中文 / 阿拉伯数字编号；省略原文时自动补入
-- [ ] T023 集成测试 `tests/integration/test_citation_verify.py`：一段含正确引用、原文有误、不存在编号、裸引用的样例输出，校验后条款原文 100% 与知识库一致（quickstart V3）
+- [x] T020 [P] 实现引用解析 `src/tu_assistant/citation/parse.py`：按 contracts/citation-format.md 的正则解析引用块与其后的 `> ` 原文；检测正文裸引用（"第X条"未带完整标记）
+- [x] T021 实现出处校验 `src/tu_assistant/citation/verify.py`：按编号查知识库，结论 `ok` / `corrected`（替换为知识库原文）/ `not_found`（删除引用块，替换为 `〔此处引用未通过校验，已删除〕`）/ `incomplete`（裸引用，记录）；同时返回校验前原文供评测（research R5）（依赖 T013、T020）
+- [x] T022 单元测试 `tests/unit/test_citation.py`：四种结论各至少 2 例；中文 / 阿拉伯数字编号；省略原文时自动补入
+- [x] T023 集成测试 `tests/integration/test_citation_verify.py`：一段含正确引用、原文有误、不存在编号、裸引用的样例输出，校验后条款原文 100% 与知识库一致（quickstart V3）
 
 ### 模型端点与对话框架
 
-- [ ] T024 [P] 实现运行时模型客户端 `src/tu_assistant/runtime/client.py`：OpenAI 兼容 Chat Completions；启动时校验 `runtime.model_endpoint` 主机在 `runtime.allowed_hosts` 内，否则拒绝启动（宪章原则 III、IV）
-- [ ] T025 [P] 实现 `tu serve model --exp <exp_id>`：封装 `mlx_lm.server`，加载基座 + 适配器，只监听 127.0.0.1
-- [ ] T026 实现会话与接口 `src/tu_assistant/chat/session.py`、`src/tu_assistant/chat/assistant.py`：`Assistant` 协议、`SessionConfig`、`Reply`（contracts/system-interface.md）；会话只存内存，`close` 后释放（FR-009）
-- [ ] T027 实现对话编排 `src/tu_assistant/chat/orchestrator.py`：拼装 system prompt（含 `max_questions_per_turn`）、调用模型、出处校验、统计追问问题数（contracts/citation-format.md §5）、按已确认 ClauseRelation 对未引用的关联条款做确定性补全提示（FR-019，research R6）、评测模式下返回 `raw_content`（依赖 T021、T024、T026）
-- [ ] T028 [P] 单元测试 `tests/unit/test_runtime_isolation.py`：端点白名单校验；静态检查 `chat/`、`runtime/`、`ui/`、`eval/` 不导入外部大模型客户端（quickstart V7）
+- [x] T024 [P] 实现运行时模型客户端 `src/tu_assistant/runtime/client.py`：OpenAI 兼容 Chat Completions；启动时校验 `runtime.model_endpoint` 主机在 `runtime.allowed_hosts` 内，否则拒绝启动（宪章原则 III、IV）
+- [x] T025 [P] 实现 `tu serve model --exp <exp_id>`：封装 `mlx_lm.server`，加载基座 + 适配器，只监听 127.0.0.1
+- [x] T026 实现会话与接口 `src/tu_assistant/chat/session.py`、`src/tu_assistant/chat/assistant.py`：`Assistant` 协议、`SessionConfig`、`Reply`（contracts/system-interface.md）；会话只存内存，`close` 后释放（FR-009）
+- [x] T027 实现对话编排 `src/tu_assistant/chat/orchestrator.py`：拼装 system prompt（含 `max_questions_per_turn`）、调用模型、出处校验、统计追问问题数（contracts/citation-format.md §5）、按已确认 ClauseRelation 对未引用的关联条款做确定性补全提示（FR-019，research R6）、评测模式下返回 `raw_content`（依赖 T021、T024、T026）
+- [x] T028 [P] 单元测试 `tests/unit/test_runtime_isolation.py`：端点白名单校验；静态检查 `chat/`、`runtime/`、`ui/`、`eval/` 不导入外部大模型客户端（quickstart V7）
 
 ### 数据合成与训练框架
 
-- [ ] T029 [P] 实现外部大模型客户端 `src/tu_assistant/synth/llm.py`（仅 synth 使用）：调用前断言输入只来自知识库；记录提供方、模型名、提示词版本、种子
-- [ ] T030 [P] 实现合成样本自动检查 `src/tu_assistant/synth/check.py`：引用可解析、条款存在、原文一致；不通过的丢弃并统计（research R4）
-- [ ] T031 [P] 实现数据集构建 `src/tu_assistant/train/dataset.py`：按 contracts/datasets.md 输出 `messages` JSONL，按 9:1 划分 `train.jsonl` / `valid.jsonl`；按条款数量均衡抽样（避免最大文件主导）；与评测集按条款与问句相似度去重并记录 `dedup_against`
-- [ ] T032 实现训练封装 `src/tu_assistant/train/mlx_train.py` 与 `tu train --config`：调用 `mlx_lm lora`，记录 ExperimentRun 清单（基座及许可证、数据集、超参、种子、耗时、峰值内存、日志路径）；创建 `configs/train/debug-1.5b.yaml`（Qwen2.5-1.5B-Instruct-4bit）与 `configs/train/demo-7b.yaml`（Qwen2.5-7B-Instruct-4bit，`--grad-checkpoint`，全部线性层）
+- [x] T029 [P] 实现外部大模型客户端 `src/tu_assistant/synth/llm.py`（仅 synth 使用）：调用前断言输入只来自知识库；记录提供方、模型名、提示词版本、种子
+- [x] T030 [P] 实现合成样本自动检查 `src/tu_assistant/synth/check.py`：引用可解析、条款存在、原文一致；不通过的丢弃并统计（research R4）
+- [x] T031 [P] 实现数据集构建 `src/tu_assistant/train/dataset.py`：按 contracts/datasets.md 输出 `messages` JSONL，按 9:1 划分 `train.jsonl` / `valid.jsonl`；按条款数量均衡抽样（避免最大文件主导）；与评测集按条款与问句相似度去重并记录 `dedup_against`
+- [x] T032 实现训练封装 `src/tu_assistant/train/mlx_train.py` 与 `tu train --config`：调用 `mlx_lm lora`，记录 ExperimentRun 清单（基座及许可证、数据集、超参、种子、耗时、峰值内存、日志路径）；创建 `configs/train/debug-1.5b.yaml`（Qwen2.5-1.5B-Instruct-4bit）与 `configs/train/demo-7b.yaml`（Qwen2.5-7B-Instruct-4bit，`--grad-checkpoint`，全部线性层）
 
 ### 评测核心（先于训练，宪章原则 V）
 
-- [ ] T033 [P] 实现评测用例格式与加载 `src/tu_assistant/eval/cases.py`：EvalCase 字段按 data-model.md；校验"`gold.clauses` 中的条款必须存在于对应知识库版本"与"任何用例不得来自真实用户对话"
-- [ ] T034 实现评测运行器 `src/tu_assistant/eval/runner.py` 与 `tu eval run`：单轮用例与固定对话脚本（`input.script`）两种；`temperature=0`；输出 `results.jsonl`、`report.md`、EvalRun 清单（依赖 T027、T033）
-- [ ] T035 [P] 实现条款识别指标 `src/tu_assistant/eval/metrics.py`：SC-002 召回率、SC-003 精确率、SC-006 出处标注完整率、SC-007 引用准确率（校验前 / 校验后分列）
-- [ ] T036 [P] 单元测试 `tests/unit/test_metrics.py`：构造已知答案验证各指标计算
-- [ ] T037 实现 `tu synth evalcases --kb <ver>`：用与训练数据不同的提示词生成评测候选用例到 `eval/cases/candidates/`（依赖 T029）
+- [x] T033 [P] 实现评测用例格式与加载 `src/tu_assistant/eval/cases.py`：EvalCase 字段按 data-model.md；校验"`gold.clauses` 中的条款必须存在于对应知识库版本"与"任何用例不得来自真实用户对话"
+- [x] T034 实现评测运行器 `src/tu_assistant/eval/runner.py` 与 `tu eval run`：单轮用例与固定对话脚本（`input.script`）两种；`temperature=0`；输出 `results.jsonl`、`report.md`、EvalRun 清单（依赖 T027、T033）
+- [x] T035 [P] 实现条款识别指标 `src/tu_assistant/eval/metrics.py`：SC-002 召回率、SC-003 精确率、SC-006 出处标注完整率、SC-007 引用准确率（校验前 / 校验后分列）
+- [x] T036 [P] 单元测试 `tests/unit/test_metrics.py`：构造已知答案验证各指标计算
+- [x] T037 实现 `tu synth evalcases --kb <ver>`：用与训练数据不同的提示词生成评测候选用例到 `eval/cases/candidates/`（依赖 T029）
 - [ ] T038 编写评测集 v1 的条款识别、拒答、例外类用例（约 35 题）`eval/cases/v1/*.jsonl`：候选用例经人工校验（`source=synthetic_reviewed`）或人工编写，由用户审阅确认后定稿
 
 ### 学习文档
