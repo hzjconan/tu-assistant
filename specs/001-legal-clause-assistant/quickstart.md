@@ -8,7 +8,7 @@
 
 - macOS（Apple Silicon，≥32GB 内存）
 - 已安装 uv；在仓库根目录执行 `uv sync`
-- 项目方提供的法律文档放在 `inputs/project/`（不提交 git）
+- 项目方提供的法律文档已入库：`inputs/project/001/`（排除文件在 `inputs/excluded/`）
 - 数据合成需要外部大模型 API Key：`export TU_EXTERNAL_LLM_API_KEY=...`
 - 下载模型：`export HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1`
 

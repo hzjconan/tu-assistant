@@ -203,7 +203,7 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 ### Phase Dependencies
 
 - **Setup (Phase 1)**：无依赖
-- **Foundational (Phase 2)**：依赖 Setup；阻塞所有用户故事。T016 需要 `inputs/project/` 已就位（已就位，25 篇）；T019、T038 需要用户参与
+- **Foundational (Phase 2)**：依赖 Setup；阻塞所有用户故事。T016 需要 `inputs/project/` 已就位（已就位，24 篇）；T019、T038 需要用户参与
 - **US1 (Phase 3)**：依赖 Foundational
 - **US2 (Phase 4)**：依赖 US1 的数据合成框架（T044）与编排（T045）；7B 训练（T059）使用 US1 + US2 的全部数据
 - **US3 (Phase 5)**：依赖 Foundational 的评测核心；T064 依赖 T059

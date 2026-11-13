@@ -104,7 +104,7 @@ tests/
 ├── integration/
 └── fixtures/                # 公开法条片段，用于测试
 eval/cases/                  # 版本化评测集（提交 git）
-inputs/                      # 项目方文档（不提交 git）
+inputs/                      # 项目方文档（公开法律语料，已提交 git）
 artifacts/                   # 知识库版本、数据集、适配器、评测结果（不提交 git）
 ```
 

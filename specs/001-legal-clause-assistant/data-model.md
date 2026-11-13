@@ -131,7 +131,7 @@
 | `run_id` | str | |
 | `system` | object | 被测系统：基座、适配器 ID（`exp_id`）、配置哈希 |
 | `kb_version` / `eval_set_version` | str | |
-| `kb_scale` | int | 知识库文档数（POC 以实际入库为准，当前 25；正式阶段用于规模曲线） |
+| `kb_scale` | int | 知识库文档数（POC 以实际入库为准，当前 24；正式阶段用于规模曲线） |
 | `results` | list[CaseResult] | 逐条结果：输出（校验前 / 后）、解析出的引用与认定、各指标得分 |
 | `metrics` | dict | SC-001 ~ SC-011 汇总值；引用准确率分校验前 / 后 |
 
