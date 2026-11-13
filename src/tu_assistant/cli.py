@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import typer
@@ -99,6 +100,30 @@ def kb_show(
         typer.echo(f"{c.number_text}\n{c.text}\n")
 
 
+@kb_app.command("lookup")
+def kb_lookup(
+    clause_id: str = typer.Argument(..., help="条款 ID，如 3296db5b22b8ea1d:a24:p1"),
+    kb_version: str | None = typer.Option(None),
+    artifacts: str = typer.Option("artifacts"),
+) -> None:
+    """按 clause_id 查条款（核对关联候选时用）。"""
+    from .kb.store import get_clause_by_id, get_document, open_kb
+
+    kb_path = (
+        Path(artifacts, "kb", f"{kb_version}.sqlite")
+        if kb_version
+        else _latest_kb(artifacts)
+    )
+    conn = open_kb(kb_path)
+    c = get_clause_by_id(conn, clause_id)
+    doc = get_document(conn, c.doc_id) if c else None
+    conn.close()
+    if not c or not doc:
+        typer.secho("未找到该条款", fg="red")
+        raise typer.Exit(1)
+    typer.echo(f"{doc.title}（{doc.version_label or '无版本'}）{c.number_text}\n{c.text}\n")
+
+
 relations_app = typer.Typer(help="条款关联：抽取与人工确认")
 kb_app.add_typer(relations_app, name="relations")
 
@@ -191,6 +216,96 @@ def relations_confirm(
     typer.echo(f"已确认 {n_confirmed} 条关联入库；{n_rejected} 条被拒绝/未确认")
 
 
+@relations_app.command("review")
+def relations_review(
+    file: str = typer.Argument(..., help="relations_pending.jsonl 路径"),
+    kb_version: str | None = typer.Option(None),
+    artifacts: str = typer.Option("artifacts"),
+) -> None:
+    """交互式核对关联候选：输入行号查看 from/to 条款并标记 confirmed。"""
+    import json as _json
+
+    from .kb.store import get_clause_by_id, get_document, open_kb
+
+    path = Path(file)
+    rows = [
+        _json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    kb_path = (
+        Path(artifacts, "kb", f"{kb_version}.sqlite")
+        if kb_version
+        else _latest_kb(artifacts)
+    )
+    conn = open_kb(kb_path)
+
+    def save() -> None:
+        path.write_text(
+            "".join(_json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+            encoding="utf-8",
+        )
+
+    def show(idx: int) -> None:
+        r = rows[idx]
+        typer.echo(
+            f"\n[{idx + 1}/{len(rows)}] {r['relation_type']}"
+            f"（origin={r.get('origin')}，当前 confirmed={r['confirmed']}）"
+        )
+        for label, key in (("from", "from_clause_id"), ("to", "to_clause_id")):
+            c = get_clause_by_id(conn, r[key])
+            doc = get_document(conn, c.doc_id) if c else None
+            if c and doc:
+                typer.echo(f"  {label}: {doc.title}（{doc.version_label or '无版本'}）{c.number_text}")
+                typer.echo(f"        {c.text}")
+            else:
+                typer.echo(f"  {label}: {r[key]}（未在库中找到）")
+
+    typer.echo(
+        f"共 {len(rows)} 条。用法：行号=查看并标记；行号 t/f=直接标记；q=退出。"
+        "标记时回车=true，n=false，s=跳过"
+    )
+    while True:
+        try:
+            line = input("\n行号> ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if line in ("q", "quit", "exit"):
+            break
+        if not line:
+            continue
+        parts = line.split()
+        try:
+            idx = int(parts[0]) - 1
+        except ValueError:
+            typer.echo("请输入行号（1 起始），或 q 退出")
+            continue
+        if not 0 <= idx < len(rows):
+            typer.echo(f"超出范围（1–{len(rows)}）")
+            continue
+        show(idx)
+        verdict = parts[1] if len(parts) > 1 else None
+        if verdict is None:
+            try:
+                verdict = input("confirmed? [Y/n/s] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                break
+        if verdict in ("", "y", "t", "true", "1"):
+            rows[idx]["confirmed"] = True
+        elif verdict in ("n", "f", "false", "0"):
+            rows[idx]["confirmed"] = False
+        else:
+            typer.echo("已跳过，未修改")
+            continue
+        save()
+        done = sum(1 for r in rows if r["confirmed"])
+        typer.echo(f"→ confirmed={rows[idx]['confirmed']}（累计 true {done}/{len(rows)}）")
+
+    conn.close()
+    typer.echo(f"\n已保存 {path}。全部核完后运行：uv run tu kb relations confirm {path}")
+
+
 serve_app = typer.Typer(help="模型服务")
 app.add_typer(serve_app, name="serve")
 
@@ -219,6 +334,18 @@ def serve_model(
         typer.secho(f"适配器不存在：{adapter}", fg="red")
         raise typer.Exit(1)
 
+    # mlx_lm.server 按请求里的 model 字段解析模型，记下本次服务的模型名
+    serve_dir = Path(artifacts, "serve")
+    serve_dir.mkdir(parents=True, exist_ok=True)
+    (serve_dir / "current.json").write_text(
+        _json.dumps(
+            {"model": base, "exp": exp,
+             "endpoint": f"http://{host}:{port}/v1"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
     cmd = [
         sys.executable, "-m", "mlx_lm.server",
         "--model", base,
@@ -228,6 +355,19 @@ def serve_model(
     ]
     typer.echo("启动：" + " ".join(cmd))
     subprocess.run(cmd)
+
+
+def _model_name(cfg, artifacts: str) -> str:
+    """model_name 为 default 时，读取 serve model 记录的当前模型。"""
+    from .config import get
+
+    name = get(cfg, "runtime.model_name", "default")
+    if name != "default":
+        return name
+    cur = Path(artifacts, "serve", "current.json")
+    if cur.exists():
+        return json.loads(cur.read_text(encoding="utf-8"))["model"]
+    return name
 
 
 synth_app = typer.Typer(help="数据合成（唯一使用外部大模型的命令组）")
@@ -362,7 +502,7 @@ def eval_run(
         kb_path=kb_path,
         endpoint=get(cfg, "runtime.model_endpoint"),
         allowed_hosts=get(cfg, "runtime.allowed_hosts"),
-        model_name=get(cfg, "runtime.model_name", "default"),
+        model_name=_model_name(cfg, artifacts),
         artifacts_dir=artifacts,
         exp_id=exp,
     )
@@ -396,7 +536,7 @@ def chat(
     client = ModelClient(
         get(cfg, "runtime.model_endpoint"),
         get(cfg, "runtime.allowed_hosts"),
-        model=get(cfg, "runtime.model_name", "default"),
+        model=_model_name(cfg, artifacts),
     )
     assistant = TrainedAssistant(client, conn)
     scfg = SessionConfig(

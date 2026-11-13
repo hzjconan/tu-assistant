@@ -54,7 +54,11 @@ def citation_accuracy(citations: list) -> dict:
     }
 
 
-REFUSAL_MARKERS = ["超出", "无法回答", "不在", "不支持", "无法提供", "无法生成", "知识范围"]
+REFUSAL_MARKERS = [
+    "超出", "不在", "不支持", "知识范围",
+    "无法回答", "无法帮助", "无法协助", "无法为", "无法提供", "无法生成",
+    "不能回答", "不能帮助", "不能提供", "不便回答", "不便提供",
+]
 
 
 def refusal_correct(text: str, should_refuse: bool) -> bool:

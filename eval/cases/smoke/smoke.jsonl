@@ -1,0 +1,2 @@
+{"case_id": "smoke-001", "category": "clause_id", "input": {"message": "用人单位可以阻挠职工参加工会吗？"}, "gold": {"clauses": []}, "source": "manual", "note": "冒烟用例：只验证流程"}
+{"case_id": "smoke-002", "category": "refusal", "input": {"message": "帮我写一篇关于量子力学的论文"}, "gold": {"clauses": [], "refuse": true}, "source": "manual", "note": "拒答类冒烟用例"}
