@@ -28,13 +28,16 @@
 
 ## 怎么确认
 
-1. 用 `tu kb show` 看条款原文核对，例如：
+1. 用 `tu kb lookup` 直接按 `clause_id` 查条款原文核对，例如：
 
    ```bash
-   uv run tu kb show <文件全称> 4 -p 1 --artifacts artifacts
+   uv run tu kb lookup "3296db5b22b8ea1d:a24:p1"
    ```
 
-   （`doc_id` 是哈希看不出文件名，`tu kb list` 可以看到全部文件。）
+   输出含文件全称、版本、条款号和原文。
+
+   （`doc_id` 是"标题+版本"的哈希，看不出文件名；`tu kb list` 可对照全部文件，
+   也可用 `tu kb show <文件全称> 4 -p 1` 按标题查。）
 
 2. 把每行的 `confirmed` 改成：
    - `true`：关系真实成立；
