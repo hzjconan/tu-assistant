@@ -148,8 +148,7 @@ vite.config.ts.timestamp-*
 # Turbo Repo
 .turbo
 
-# tu-assistant: project documents and generated artifacts (never commit)
-inputs/
+# tu-assistant: generated artifacts (never commit; inputs/ 为公开法律语料，已入库)
 artifacts/
 
 # Python
