@@ -68,5 +68,6 @@ def render_report(rows: list[dict]) -> str:
         "- `no_clause_structure`：未找到条款结构（既不是“第X条”也不是“一、二、”分段）",
         "- `same_title_multi_version`：同名文件按日期推断为不同版本（最新为 current），需人工核对",
         "- `same_title_no_date`：同名文件缺日期无法排序，按文件顺序兜底并记问题，需人工核对",
+        "- `version_inferred`：文件名无版本标识，版本号按发布日期推断，需人工核对",
     ]
     return "\n".join(lines) + "\n"

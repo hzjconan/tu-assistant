@@ -18,29 +18,45 @@ from .validate import render_report, validate_clauses, validate_meta
 
 RE_TITLE_BOOK = re.compile(r"《([^》]+)》")
 RE_VERSION = re.compile(r"[（(]([^（）()]*(?:年|修正|修订|施行|试行|暂行)[^（）()]*)[)）]")
-RE_DATE = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日")
+RE_DECREE = re.compile(r"[（(][^（）()]*(?:令|号)[^（）()]*[)）]")  # （国务院令 第823号）
+RE_PREFIX = re.compile(r"^\d+[_\-、.\s]+")  # 文件名序号前缀 "01_"
+RE_DATE = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日|(\d{4})-(\d{1,2})-(\d{1,2})")
+
+
+def _latest_date(lines: list[str], scan: int = 10) -> str | None:
+    """开头/末尾各 scan 行内所有日期中取最新一个（同行多日期对应历次修订）。"""
+    dates = []
+    for line in lines[:scan] + lines[-scan:]:
+        for m in RE_DATE.finditer(line):
+            if m.group(1):
+                dates.append(
+                    f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                )
+            else:
+                dates.append(
+                    f"{m.group(4)}-{int(m.group(5)):02d}-{int(m.group(6)):02d}"
+                )
+    return max(dates) if dates else None
 
 
 def parse_doc_meta(filename: str, lines: list[str]) -> DocumentMeta:
     """从文件名与文件头推断元数据；识别不出的字段留空，交校验报告提示。"""
-    stem = Path(filename).stem
+    stem = RE_PREFIX.sub("", Path(filename).stem)
     m = RE_TITLE_BOOK.search(stem)
-    title = m.group(1) if m else ""
+    title = m.group(1).strip() if m else ""
     vm = RE_VERSION.search(stem)
-    version_label = vm.group(1) if vm else ""
+    version_label = vm.group(1).strip() if vm else ""
 
-    promulgated_on = None
-    for line in lines[:5]:
-        dm = RE_DATE.search(line)
-        if dm:
-            promulgated_on = f"{dm.group(1)}-{int(dm.group(2)):02d}-{int(dm.group(3)):02d}"
-            break
-        if RE_TITLE_BOOK.search(line) and not title:
-            title = RE_TITLE_BOOK.search(line).group(1)
+    promulgated_on = _latest_date(lines)
+    if not title:
+        for line in lines[:5]:
+            if RE_TITLE_BOOK.search(line):
+                title = RE_TITLE_BOOK.search(line).group(1).strip()
+                break
 
     if not title:
         # 文件名里没有《》：先看文件首行是不是标题行（短、无结构标记、无句号），
-        # 否则去掉括号版本部分，用文件名剩余部分当标题
+        # 否则去掉括号版本/令号部分，用文件名剩余部分当标题
         first = lines[0].strip() if lines else ""
         if (
             first
@@ -50,7 +66,13 @@ def parse_doc_meta(filename: str, lines: list[str]) -> DocumentMeta:
         ):
             title = first
         else:
-            title = RE_VERSION.sub("", stem).strip(" _-（）()")
+            title = RE_VERSION.sub("", RE_DECREE.sub("", stem)).strip(" _-（）()")
+
+    title = re.sub(r"\s+", "", title)  # 文件名中可能混入空格
+
+    if not version_label and promulgated_on:
+        # 版本缺失时用发布日期推断（标记待人工核对）
+        version_label = promulgated_on
 
     meta = DocumentMeta(
         title=title,
@@ -137,6 +159,9 @@ def import_directory(
                 + validate_meta(meta)
                 + validate_clauses(clauses)
             )
+            stem = RE_PREFIX.sub("", Path(files[idx - 1]).stem)
+            if meta.version_label and not RE_VERSION.search(stem):
+                issues.append("version_inferred")
 
             insert_document(conn, meta)
             for c in clauses:
