@@ -25,7 +25,12 @@ class CheckStats:
 
 
 def check_sample(
-    assistant_text: str, kb_conn: sqlite3.Connection, stats: CheckStats
+    assistant_text: str,
+    kb_conn: sqlite3.Connection,
+    stats: CheckStats,
+    *,
+    require_citation: bool = False,
+    expected_clause_ids: set[str] | None = None,
 ) -> bool:
     """检查一条合成样本的助手输出。返回是否保留。"""
     stats.total += 1
@@ -37,6 +42,13 @@ def check_sample(
     if s["corrected"]:
         # 原文写错的样本直接丢弃（训练数据应使用正确原文）
         stats.record_drop("citation_text_wrong")
+        return False
+    cited_ids = {c.resolved_clause_id for c in result.citations if c.resolved_clause_id}
+    if require_citation and not cited_ids:
+        stats.record_drop("citation_missing")
+        return False
+    if expected_clause_ids and not expected_clause_ids <= cited_ids:
+        stats.record_drop("citation_mismatch")
         return False
     stats.kept += 1
     return True

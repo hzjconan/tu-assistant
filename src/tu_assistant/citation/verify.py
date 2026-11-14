@@ -69,12 +69,20 @@ def _resolve(
         return None, version_label, []
 
     if c.item_no is not None:
-        row = next(
-            (r for r in rows if r.paragraph_no == c.paragraph_no and r.item_no == c.item_no),
-            None,
-        )
-        return row, version_label, rows
-    if c.paragraph_no is not None:
+        if c.paragraph_no is not None:
+            row = next(
+                (
+                    r
+                    for r in rows
+                    if r.paragraph_no == c.paragraph_no and r.item_no == c.item_no
+                ),
+                None,
+            )
+            return row, version_label, rows
+        item_rows = [r for r in rows if r.item_no == c.item_no]
+        if len(item_rows) == 1:
+            return item_rows[0], version_label, rows
+    elif c.paragraph_no is not None:
         row = next(
             (
                 r
@@ -84,10 +92,27 @@ def _resolve(
             None,
         )
         return row, version_label, rows
-    # 只给了条号：整"条"只有一行（单款无项）才能精确解析
-    if len(rows) == 1:
+    elif len(rows) == 1:
+        # 只给了条号：整"条"只有一行（单款无项）才能精确解析
         return rows[0], version_label, rows
-    return None, version_label, rows  # 多款多条：incomplete
+
+    if c.quoted_text:
+        candidates = [
+            r for r in rows if _canonical_for_row(r, rows) == c.quoted_text
+        ]
+        if len(candidates) == 1:
+            return candidates[0], version_label, rows
+    return None, version_label, rows  # 编号/原文都不能唯一定位：incomplete
+
+
+def _canonical_for_row(row: Clause, rows: list[Clause]) -> str:
+    if row.item_no is not None:
+        return row.text
+    items = [
+        r for r in rows
+        if r.paragraph_no == row.paragraph_no and r.item_no is not None
+    ]
+    return row.text + "".join(i.text for i in items) if items else row.text
 
 
 def _fix_version_in_raw(raw: str, version_label: str) -> str:

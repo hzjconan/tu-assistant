@@ -372,6 +372,8 @@ def _model_name(cfg, artifacts: str) -> str:
 
 synth_app = typer.Typer(help="数据合成（唯一使用外部大模型的命令组）")
 eval_app = typer.Typer(help="评测")
+eval_cases_app = typer.Typer(help="评测用例核对")
+eval_app.add_typer(eval_cases_app, name="cases")
 app.add_typer(synth_app, name="synth")
 app.add_typer(eval_app, name="eval")
 
@@ -408,37 +410,76 @@ def synth_sft(
     synth_config: str = typer.Option("configs/synth.yaml"),
     eval_cases: str = typer.Option("eval/cases", help="评测集目录（去重用）"),
     skip_llm: bool = typer.Option(False, help="只用确定性样本（调试用）"),
+    reuse_dataset: str | None = typer.Option(
+        None, help="复用已有 train/valid 中的样本，只补新生成部分"
+    ),
+    reuse_only: bool = typer.Option(
+        False, "--reuse-only", help="只重建数据集，不再生成任何新样本"
+    ),
 ) -> None:
     """生成 SFT 训练样本并构建数据集。"""
     from .config import load_synth_config
     from .eval.cases import eval_questions, load_cases
     from .kb.store import open_kb
-    from .synth import consult, dialogs, knowledge, refusal
+    from .synth import consult, dialogs, general, knowledge, refusal
     from .synth.check import CheckStats, check_sample
     from .synth.llm import from_config
-    from .train.dataset import balance_by_doc, dedup_against_eval, write_dataset
+    from .train.dataset import (
+        balance_by_doc,
+        dedup_against_eval,
+        load_message_samples,
+        write_dataset,
+    )
 
     kb_path = (
         Path(artifacts, "kb", f"{kb_version}.sqlite")
         if kb_version
         else _latest_kb(artifacts)
     )
+    if reuse_only and not reuse_dataset:
+        typer.secho("--reuse-only 需要同时提供 --reuse-dataset", fg="red")
+        raise typer.Exit(1)
+
     conn = open_kb(kb_path)
     cfg = load_synth_config(synth_config)
     llm = None if skip_llm else from_config(cfg)
 
-    samples = knowledge.generate(conn, llm, cfg)
-    if llm is not None:
-        samples += dialogs.generate(conn, llm, cfg)
-        samples += consult.generate(conn, llm, cfg)
-    samples += refusal.generate(llm, cfg)
+    if reuse_dataset:
+        samples = load_message_samples(reuse_dataset, conn)
+        typer.echo(f"复用已有样本 {len(samples)} 条 → {reuse_dataset}")
+    else:
+        samples = knowledge.generate(conn, llm, cfg)
+    if not reuse_only:
+        if llm is not None:
+            behavior = cfg.get("behavior", {})
+            samples += dialogs.generate(
+                conn, llm, cfg,
+                n_per_variant=behavior.get("intent_samples", 20),
+            )
+            samples += consult.generate(
+                conn, llm, cfg,
+                n_single=behavior.get("consult_single", 40),
+                n_multi=behavior.get("consult_multi", 20),
+            )
+        samples += refusal.generate(llm, cfg)
+        general_target = int(len(samples) * cfg.get("general_ratio", 0.05))
+        samples += general.generate(llm, cfg, target=general_target)
 
     # 检查：引用可解析、条款存在、原文一致（assistant 输出部分）
     stats = CheckStats()
     kept = []
     for s in samples:
         last = s["messages"][-1]
-        if last["role"] == "assistant" and not check_sample(last["content"], conn, stats):
+        requires_citation = s.get("meta", {}).get("type") not in {
+            "refusal", "general",
+        }
+        if last["role"] == "assistant" and not check_sample(
+            last["content"],
+            conn,
+            stats,
+            require_citation=requires_citation,
+            expected_clause_ids=set(s.get("meta", {}).get("clause_ids", [])),
+        ):
             continue
         kept.append(s)
     conn.close()
@@ -453,12 +494,23 @@ def synth_sft(
 
     kept = balance_by_doc(kept, seed=cfg.get("seed", 42))
     dataset_id = f"ds-{kb_path.stem}-{len(kept)}"
+    generator = llm.meta() if llm else {"provider": "deterministic"}
+    if reuse_dataset:
+        generator["reuse_dataset"] = str(reuse_dataset)
+        reuse_manifest = Path(reuse_dataset, "manifest.json")
+        if reuse_manifest.exists():
+            generator["reuse_manifest"] = json.loads(
+                reuse_manifest.read_text(encoding="utf-8")
+            )
+    if reuse_only:
+        generator["mode"] = "reuse_only"
     result = write_dataset(
         kept, dataset_id, Path(artifacts, "datasets"),
         kb_version=kb_path.stem,
-        generator=llm.meta() if llm else {"provider": "deterministic"},
+        generator=generator,
         eval_set_version="v1",
         seed=cfg.get("seed", 42),
+        train_oversample=cfg.get("train_oversample", {}),
     )
     typer.echo(f"数据集 {result['dataset_id']}：train {result['train']} / "
                f"valid {result['valid']}  分布 {result['counts']}")
@@ -477,6 +529,137 @@ def train(
         f"exp_id={result['exp_id']}  退出码 {result['returncode']}  "
         f"耗时 {result['duration_s']}s  日志 {result['log']}"
     )
+
+
+@eval_cases_app.command("review")
+def eval_cases_review(
+    file: str = typer.Argument(..., help="候选用例 JSONL"),
+    kb_version: str | None = typer.Option(None),
+    artifacts: str = typer.Option("artifacts"),
+) -> None:
+    """逐条核对候选用例：输入行号查看问题与 gold 条款，标记 confirmed。"""
+    import json as _json
+
+    from .kb.store import get_clause_by_id, get_document, open_kb
+
+    path = Path(file)
+    rows = [
+        _json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    for row in rows:
+        row.setdefault("confirmed", False)
+
+    kb_path = (
+        Path(artifacts, "kb", f"{kb_version}.sqlite")
+        if kb_version
+        else _latest_kb(artifacts)
+    )
+    conn = open_kb(kb_path)
+
+    def save() -> None:
+        path.write_text(
+            "".join(_json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+            encoding="utf-8",
+        )
+
+    def show(idx: int) -> None:
+        row = rows[idx]
+        typer.echo(
+            f"\n[{idx + 1}/{len(rows)}] {row['case_id']} "
+            f"{row['category']}（confirmed={row['confirmed']}）"
+        )
+        if "message" in row["input"]:
+            typer.echo(f"  问题: {row['input']['message']}")
+        for i, msg in enumerate(row["input"].get("script", []), 1):
+            typer.echo(f"  第{i}轮: {msg}")
+        for cid in row.get("gold", {}).get("clauses", []):
+            clause = get_clause_by_id(conn, cid)
+            doc = get_document(conn, clause.doc_id) if clause else None
+            if clause and doc:
+                typer.echo(f"  gold: {doc.title}（{doc.version_label or '无版本'}）"
+                           f"{clause.number_text}")
+                typer.echo(f"        {clause.text}")
+            else:
+                typer.echo(f"  gold: {cid}（未在库中找到）")
+
+    typer.echo(
+        f"共 {len(rows)} 条。用法：行号=查看并标记；行号 t/f=直接标记；"
+        "q=退出。标记时回车=true，n=false，s=跳过"
+    )
+    while True:
+        try:
+            line = input("\n行号> ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if line in ("q", "quit", "exit"):
+            break
+        if not line:
+            continue
+        parts = line.split()
+        try:
+            idx = int(parts[0]) - 1
+        except ValueError:
+            typer.echo("请输入行号（1 起始），或 q 退出")
+            continue
+        if not 0 <= idx < len(rows):
+            typer.echo(f"超出范围（1–{len(rows)}）")
+            continue
+        show(idx)
+        verdict = parts[1] if len(parts) > 1 else None
+        if verdict is None:
+            try:
+                verdict = input("confirmed? [Y/n/s] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                break
+        if verdict in ("", "y", "t", "true", "1"):
+            rows[idx]["confirmed"] = True
+        elif verdict in ("n", "f", "false", "0"):
+            rows[idx]["confirmed"] = False
+        else:
+            typer.echo("已跳过，未修改")
+            continue
+        save()
+        done = sum(1 for row in rows if row["confirmed"])
+        typer.echo(f"→ confirmed={rows[idx]['confirmed']}（累计 true {done}/{len(rows)}）")
+
+    conn.close()
+    typer.echo(
+        f"\n已保存 {path}。审完后运行："
+        f"uv run tu eval cases promote {path}"
+    )
+
+
+@eval_cases_app.command("promote")
+def eval_cases_promote(
+    file: str = typer.Argument(..., help="已核对的候选用例 JSONL"),
+    out: str = typer.Option(
+        "eval/cases/v1/reviewed.jsonl", help="输出的正式评测集 JSONL"
+    ),
+) -> None:
+    """把 confirmed=true 的候选用例写入 v1，并标记 source=synthetic_reviewed。"""
+    import json as _json
+
+    rows = [
+        _json.loads(line)
+        for line in Path(file).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    kept = []
+    for row in rows:
+        if not row.get("confirmed"):
+            continue
+        row["source"] = "synthetic_reviewed"
+        row.pop("confirmed", None)
+        kept.append(row)
+    out_path = Path(out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        "".join(_json.dumps(r, ensure_ascii=False) + "\n" for r in kept),
+        encoding="utf-8",
+    )
+    typer.echo(f"已写入 {len(kept)} 条正式用例 → {out_path}")
 
 
 @eval_app.command("run")

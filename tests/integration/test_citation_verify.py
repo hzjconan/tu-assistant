@@ -70,3 +70,24 @@ def test_mixed_output_end_to_end():
     assert kept  # 至少有第四条、第八条
     r2 = verify_output(r.text, conn)
     assert r2.stats["corrected"] == 0 and r2.stats["not_found"] == 0
+
+
+def test_item_without_paragraph_resolves_when_unique():
+    conn = _kb()
+    r = verify_output("〔《示例工会法》（2020）第三条第一项〕", conn)
+    c = r.citations[0]
+    assert c.resolved_clause_id.endswith(":a3:p1:i1")
+    assert c.verdict == "ok"
+
+
+def test_article_with_exact_quote_resolves_clause():
+    conn = _kb()
+    quote = (
+        "企业、事业单位应当依法建立工会组织："
+        "（一）职工二十五人以上的，应当建立基层工会委员会；"
+        "（二）不足二十五人的，可以单独建立，也可以联合建立。"
+    )
+    r = verify_output(f"〔《示例工会法》（2020）第三条〕\n> {quote}", conn)
+    c = r.citations[0]
+    assert c.resolved_clause_id.endswith(":a3:p1")
+    assert c.verdict == "ok"

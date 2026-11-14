@@ -94,11 +94,11 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [x] T035 [P] 实现条款识别指标 `src/tu_assistant/eval/metrics.py`：SC-002 召回率、SC-003 精确率、SC-006 出处标注完整率、SC-007 引用准确率（校验前 / 校验后分列）
 - [x] T036 [P] 单元测试 `tests/unit/test_metrics.py`：构造已知答案验证各指标计算
 - [x] T037 实现 `tu synth evalcases --kb <ver>`：用与训练数据不同的提示词生成评测候选用例到 `eval/cases/candidates/`（依赖 T029）
-- [ ] T038 编写评测集 v1 的条款识别、拒答、例外类用例（约 35 题）`eval/cases/v1/*.jsonl`：候选用例经人工校验（`source=synthetic_reviewed`）或人工编写，由用户审阅确认后定稿
+- [x] T038 编写评测集 v1 的条款识别、拒答、例外类用例（约 35 题）`eval/cases/v1/*.jsonl`：候选用例经人工校验（`source=synthetic_reviewed`）或人工编写，由用户审阅确认后定稿（已确认 60 题 → `eval/cases/v1/reviewed.jsonl`）
 
 ### 学习文档
 
-- [ ] T039 撰写 `docs/learning/03-knowledge-base.md`：法律文本结构、条款切分规则与本项目文档的统计结果、知识库版本、出处校验原理与四种结论、校验层的局限；更新 `00-glossary.md`
+- [x] T039 撰写 `docs/learning/03-knowledge-base.md`：法律文本结构、条款切分规则与本项目文档的统计结果、知识库版本、出处校验原理与四种结论、校验层的局限；更新 `00-glossary.md`
 
 **Checkpoint**: 知识库、出处校验、模型端点、训练封装、评测核心就绪（quickstart V1–V3 通过）
 
@@ -112,24 +112,24 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 ### 训练数据（知识类 + 咨询行为类）
 
-- [ ] T040 [P] [US1] 实现知识类样本合成 `src/tu_assistant/synth/knowledge.py`：条款复述、编号与内容互查、改写问答 ×3–5、条款关系（仅用 `confirmed=true` 的关联）（research R3）
-- [ ] T041 [P] [US1] 实现意图确认样本合成 `src/tu_assistant/synth/dialogs.py`：模糊开场 → 追问（每个样本的 `max_questions` 取 2–6 随机并写入 system prompt）→ 确认意图 → 回答；含用户要求跳过追问、中途改变意图的样本（FR-010 ~ FR-014）
-- [ ] T042 [P] [US1] 实现咨询类样本合成 `src/tu_assistant/synth/consult.py`：单行为、多违法行为多主体（违法主体不预设类型，FR-017）、例外情形、信息不足时分情形回答；输出遵守 contracts/citation-format.md §3
-- [ ] T043 [P] [US1] 实现拒答样本合成 `src/tu_assistant/synth/refusal.py`：知识库外问题（其他法律领域、与工会无关、本期不支持的需求如起草维权文书）→ 明确拒答或引导（FR-014、FR-022）
-- [ ] T044 [US1] 实现 `tu synth sft --kb <ver>` 汇总 T040–T043 与约 5% 通用对话，经 T030 检查、T031 构建数据集（依赖 T040–T043）
+- [x] T040 [P] [US1] 实现知识类样本合成 `src/tu_assistant/synth/knowledge.py`：条款复述、编号与内容互查、改写问答 ×3–5、条款关系（仅用 `confirmed=true` 的关联）（research R3）
+- [x] T041 [P] [US1] 实现意图确认样本合成 `src/tu_assistant/synth/dialogs.py`：模糊开场 → 追问（每个样本的 `max_questions` 取 2–6 随机并写入 system prompt）→ 确认意图 → 回答；含用户要求跳过追问、中途改变意图的样本（FR-010 ~ FR-014）
+- [x] T042 [P] [US1] 实现咨询类样本合成 `src/tu_assistant/synth/consult.py`：单行为、多违法行为多主体（违法主体不预设类型，FR-017）、例外情形、信息不足时分情形回答；输出遵守 contracts/citation-format.md §3
+- [x] T043 [P] [US1] 实现拒答样本合成 `src/tu_assistant/synth/refusal.py`：知识库外问题（其他法律领域、与工会无关、本期不支持的需求如起草维权文书）→ 明确拒答或引导（FR-014、FR-022）
+- [x] T044 [US1] 实现 `tu synth sft --kb <ver>` 汇总 T040–T043 与约 5% 通用对话，经 T030 检查、T031 构建数据集（依赖 T040–T043）
 
 ### 编排与交互
 
-- [ ] T045 [US1] 在 `src/tu_assistant/chat/orchestrator.py` 中实现咨询回答末尾固定追加"*以上内容仅供参考，不构成法律意见。*"（FR-023），拒答时不追加结构
-- [ ] T046 [P] [US1] 实现 Markdown 导出 `src/tu_assistant/chat/export.py`：`export_markdown` 返回某轮回复的 Markdown（FR-032）
-- [ ] T047 [US1] 实现 `tu chat`：命令行多轮对话，`/save <path>` 保存最后一轮为 `.md`，`/new` 新会话
+- [x] T045 [US1] 在 `src/tu_assistant/chat/orchestrator.py` 中实现咨询回答末尾固定追加"*以上内容仅供参考，不构成法律意见。*"（FR-023），拒答时不追加结构
+- [x] T046 [P] [US1] 实现 Markdown 导出 `src/tu_assistant/chat/export.py`：`export_markdown` 返回某轮回复的 Markdown（FR-032）
+- [x] T047 [US1] 实现 `tu chat`：命令行多轮对话，`/save <path>` 保存最后一轮为 `.md`，`/new` 新会话
 
 ### 评测与训练
 
-- [ ] T048 [P] [US1] 实现多违法行为与关联补全指标（SC-004、SC-005）、拒答与误拒指标（SC-008）、意图确认指标（SC-001：3 轮内正确确认的比例）于 `src/tu_assistant/eval/metrics.py`，并补充 `tests/unit/test_metrics.py`
+- [x] T048 [P] [US1] 实现多违法行为与关联补全指标（SC-004、SC-005）、拒答与误拒指标（SC-008）、意图确认指标（SC-001：3 轮内正确确认的比例）于 `src/tu_assistant/eval/metrics.py`，并补充 `tests/unit/test_metrics.py`
 - [ ] T049 [US1] 编写评测集 v1 的多违法行为与意图确认（固定对话脚本）用例约 20 题，加入 `eval/cases/v1/`，由用户审阅确认
 - [ ] T050 [US1] 用 `configs/train/debug-1.5b.yaml` 训练，评测，跑通全流程（quickstart V4）；记录 loss 曲线与评测结果
-- [ ] T051 [US1] 撰写 `docs/learning/04-training-data.md`：训练数据样例（真实生成结果）、为什么改写成问答、追问上限随机化、合成样本检查与丢弃率、评测与训练去重；更新术语表
+- [x] T051 [US1] 撰写 `docs/learning/04-training-data.md`：训练数据样例（真实生成结果）、为什么改写成问答、追问上限随机化、合成样本检查与丢弃率、评测与训练去重；更新术语表
 
 **Checkpoint**: 1.5B 模型可多轮咨询，全流程跑通（MVP 流程验证）
 

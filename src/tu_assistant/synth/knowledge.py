@@ -78,10 +78,12 @@ def paraphrase_samples(
     titles: dict[str, tuple[str, str]],
     llm: ExternalLLM,
     rewrite_factor: int,
+    *,
+    progress_every: int = 50,
 ) -> list[dict]:
     """改写问答：每条条款让外部模型写 rewrite_factor 种问法。"""
     samples = []
-    for c in clauses:
+    for idx, c in enumerate(clauses, 1):
         title, version = titles[c.doc_id]
         marker = _marker(title, version, c)
         for _ in range(rewrite_factor):
@@ -107,6 +109,8 @@ def paraphrase_samples(
                              "doc_id": c.doc_id, "clause_ids": [c.clause_id]},
                 }
             )
+        if progress_every and idx % progress_every == 0:
+            print(f"paraphrase progress: {idx}/{len(clauses)} clauses, {len(samples)} samples")
     return samples
 
 
@@ -184,6 +188,7 @@ def generate(kb_conn: sqlite3.Connection, llm: ExternalLLM | None, cfg: dict) ->
     samples += relation_samples(kb_conn, titles)
     if llm is not None:
         samples += paraphrase_samples(
-            clauses, titles, llm, cfg.get("rewrite_factor", 4)
+            clauses, titles, llm, cfg.get("rewrite_factor", 4),
+            progress_every=cfg.get("progress_every", 50),
         )
     return samples

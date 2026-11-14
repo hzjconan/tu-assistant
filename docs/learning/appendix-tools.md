@@ -99,7 +99,27 @@ Typer 的角色很轻：`@relations_app.command("review")` 装饰器把函数注
 - **uv**：只负责装依赖（含 Typer）、生成入口、在虚拟环境里运行它。
   换成 pip+venv 手动管理，`cli.py` 一个字符都不用改。
 
-## [LA.5] 可以继续问的问题
+## [LA.5] 评测候选的核对工具
+
+`tu eval cases review` 复用了关联核对的交互模式：
+
+```bash
+uv run tu eval cases review eval/cases/candidates/candidates.jsonl
+```
+
+输入行号后显示候选用例的问题、类别、以及 `gold.clauses` 指向的法规标题、
+条款编号和原文；输入 `t`/`f` 或在追问时回车/输入 `n` 来标记
+`confirmed`。全部审完后运行：
+
+```bash
+uv run tu eval cases promote eval/cases/candidates/candidates.jsonl
+```
+
+`promote` 只把 `confirmed=true` 的候选写入 `eval/cases/v1/reviewed.jsonl`，
+并把 `source` 改成 `synthetic_reviewed`——这正是评测加载器认可的人工已审
+来源。实现位于 `cli.py` 的 `eval_cases_review()` 与 `eval_cases_promote()`。
+
+## [LA.6] 可以继续问的问题
 
 - uv 的依赖解析（resolution）和 pip 有什么区别？为什么快？
 - lock 文件里记了什么？换台机器 `uv sync` 怎么复现环境？

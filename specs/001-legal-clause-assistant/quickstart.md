@@ -24,8 +24,8 @@ uv run pytest tests/unit
 ## V2. 文档入库
 
 ```bash
-uv run tu kb import inputs/project
-uv run tu kb show 中华人民共和国工会法 51
+uv run tu kb import inputs/project/001
+uv run tu kb show "中华人民共和国工会法" 51
 ```
 
 **预期**：生成新的 `kb_version` 与 `parse_report.md`；抽查的条款原文与源文件逐字一致；
@@ -43,11 +43,14 @@ uv run pytest tests/integration/test_citation_verify.py
 ## V4. 全流程调通（1.5B）
 
 ```bash
-uv run tu synth sft --kb <ver>
+uv run tu synth sft --kb-version <ver>
+uv run tu synth evalcases --kb-version <ver> --n 60
+uv run tu eval cases review eval/cases/candidates/candidates.jsonl
+uv run tu eval cases promote eval/cases/candidates/candidates.jsonl
 uv run tu train --config configs/train/debug-1.5b.yaml
 uv run tu serve model --exp <exp_id>
 uv run tu chat
-uv run tu eval run --exp <exp_id> --kb <ver> --cases v1
+uv run tu eval run --exp <exp_id> --kb-version <ver> --cases eval/cases/v1
 ```
 
 对话示例：先输入"我们单位领导不让搞工会"，确认系统追问意图；再说明"想了解法律规定"并补充案情。
@@ -61,7 +64,7 @@ uv run tu eval run --exp <exp_id> --kb <ver> --cases v1
 ```bash
 uv run tu train --config configs/train/demo-7b.yaml
 uv run tu serve model --exp <exp_id>
-uv run tu eval run --exp <exp_id> --kb <ver> --cases v1
+uv run tu eval run --exp <exp_id> --kb-version <ver> --cases eval/cases/v1
 ```
 
 **预期**：评测报告覆盖 spec SC-001 ~ SC-011，引用准确率分校验前 / 校验后两列（FR-034）；

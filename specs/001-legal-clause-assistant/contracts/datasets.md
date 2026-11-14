@@ -34,6 +34,9 @@ POC 只有一个 SFT 数据集，知识类与行为类样本混合（research R3
 - `max_questions` 在 2–6 之间随机，并写入 system prompt（research R6）。
 - 普法文章样本中的人物与单位一律为虚构名称。
 - 数据集按 9:1 划分训练集与验证集（mlx-lm 需要 `train.jsonl`、`valid.jsonl`）。
+- 写出的 JSONL 只包含 `messages`；`meta` 仅用于生成侧溯源、均衡、去重与统计。
+- 允许在 `configs/synth.yaml` 中配置 train 侧类型过采样（如 intent/consult/refusal ×4），
+  验证集不得包含重复样本；`manifest.json` 同时记录原始计数与 train 有效计数。
 
 ## 去重要求
 

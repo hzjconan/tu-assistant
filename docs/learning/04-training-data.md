@@ -1,7 +1,8 @@
 # 第 4 章 训练数据：外部 AI 怎么用、产出什么样
 
-> 状态：撰写中。本章先覆盖"数据合成"这一段；训练过程与评测结果
-> 在跑完后补充。
+> 对应任务：Phase 3 的 T040–T044。代码在 `src/tu_assistant/synth/` 与
+> `src/tu_assistant/train/dataset.py`。本章记录数据合成的机制、质量关卡
+> 与当前 POC 的真实结果。
 
 ## L4.1 为什么需要外部 AI
 
@@ -109,6 +110,7 @@ c.text 填入提示词 → DeepSeek → 样本（meta.clause_ids 回记该条款
 | dialogs 意图确认 | 用 | 多轮脚本：用户说大白话 → 助手追问 ≤N 个问题 → 确认意图后回答。含"用户中途变卦"等变体 |
 | consult 咨询 | 用 | 案情描述 → "违法行为认定"结构化回答（主体/适用条款/分析/法律责任），含多违法行为变体 |
 | refusal 拒答 | 模板+LLM 改写 | 范围外问题 → 明确拒答并说明边界 |
+| general 通用对话 | 模板+LLM 批量扩写 | 少量非法律任务，保持通用指令跟随能力（约 5%） |
 
 每条样本落盘是同一种结构（JSONL 一行）：
 
@@ -131,18 +133,18 @@ marker 和原文），也不参与训练**——`write_dataset` 写 train.jsonl
 meta 在生产中的三个落点（写、读、剥）：
 
 ```python
-# 1) 生成时写入（synth/knowledge.py:106）
+# 1) 生成时写入（synth/knowledge.py:108）
 samples.append({
     "messages": [{"role": "user", ...}, {"role": "assistant", ...}],
     "meta": {"type": "knowledge", "kind": "paraphrase",
              "doc_id": c.doc_id, "clause_ids": [c.clause_id]},
 })
 
-# 2) 均衡/统计时读取（train/dataset.py:65、:113）
+# 2) 均衡/统计时读取（train/dataset.py:66、:185）
 doc = s.get("meta", {}).get("doc_id")            # 按文件均衡分桶
 counts[s.get("meta", {}).get("type", "unknown")] += 1  # manifest 计数
 
-# 3) 写训练文件时剥掉（train/dataset.py:109）
+# 3) 写训练文件时剥掉（train/dataset.py:180）
 f.write(json.dumps({"messages": s["messages"]}, ensure_ascii=False) + "\n")
 #                                    ^ 注意：只有 messages，没有 meta
 ```
@@ -154,11 +156,22 @@ f.write(json.dumps({"messages": s["messages"]}, ensure_ascii=False) + "\n")
 **和运行时出处校验层完全相同的检查**：
 
 - 引用能解析、条款在 KB 里存在、引用原文与 KB 逐字一致 → 保留；
-- 否则 → 丢弃并记原因（如 `citation_text_wrong`）。
+- 引用了不存在的条款 → `citation_not_found`，丢弃；
+- 引用原文与 KB 不一致 → `citation_text_wrong`，丢弃；
+- 知识/咨询/意图类样本**完全解析不到有效引用** → `citation_missing`，
+  丢弃（拒答/通用类本来就无引用，不受这条限制）；
+- 引用虽然合法，但不是生成这条样本时使用的条款 → `citation_mismatch`，
+  丢弃。这样能保证 meta 里记的 `clause_ids` 和答案实际引用一致。
 
 之后还有两道：`dedup_against_eval`（和评测集逐字重复的训练样本
 剔除，防止"背答案"），`balance_by_doc`（任一文件样本占比 ≤20%，
 防止大文件主导——民法典时代为它准备的，现在仍是保险）。
+
+一个踩坑：`citation_missing` 刚启用时误伤了 8,113 条样本，
+其中两类其实不该丢——`第N条第K项`没写"第M款"、以及`第N条`配了
+能唯一匹配某款的原文。于是校验层补了两条确定性规则：项号在条款内
+唯一时反推款号；编号不完整但引用原文能唯一匹配某行时反推条款。
+最终仍有 3,228 条真正无法定位的样本被丢弃。
 
 ## L4.6 数据集落地
 
@@ -168,9 +181,34 @@ f.write(json.dumps({"messages": s["messages"]}, ensure_ascii=False) + "\n")
 - `manifest.json`：kb 版本、生成器信息（provider/模型/提示词版本）、
   种子、各类样本计数——谁、用什么、喂了什么，全部可查；
 - `artifacts/datasets/latest` 软链始终指向最新数据集，训练配置的
-  `data:` 字段就指向它，换数据集不用改配置。
+  `data:` 字段就指向它，换数据集不用改配置；
+- `--reuse-dataset` 可复用已有 `messages` 样本，只补新生成部分；
+  `--reuse-only` 表示只用已有样本重新检查、均衡和切分，不再生成。
 
-## L4.7 可以继续问的问题
+## L4.7 当前数据集的真实结果
+
+第一版完整合成（`rewrite_factor=4`）产出 18,726 条样本，但分布严重偏科：
+知识类 18,638 条，意图/咨询/拒答合计只有 88 条。于是做了两件事：
+
+1. **补行为类样本**：意图确认 240 目标、咨询 240 目标、拒答模板扩到
+   16 个 × 6 次改写；
+2. **训练侧过采样**：只在 train 中把 intent/consult/refusal 重复 4 次，
+   valid 保持原分布，避免同一个多轮对话同时出现在训练和验证里。
+
+最终版本：`ds-kb-20261113-093057-14710`
+
+| 口径 | knowledge | intent | consult | refusal | 合计 |
+|---|---:|---:|---:|---:|---:|
+| 原始样本 | 14,240 | 196 | 231 | 43 | 14,710 |
+| train 有效样本 | 12,821 | 692 | 836 | 144 | 14,493 |
+| valid | 1,419 | 23 | 22 | 7 | 1,471 |
+
+这里的行为类占比仍不高，但从 0.5% 提到了训练侧约 11.5%；先看 1.5B
+调试模型的评测，再决定是否继续补。当前这版数据是在通用对话生成器
+补齐前构建的，因此 `counts` 里没有 `general`；下一次完整重建时会按
+`general_ratio` 混入约 5% 通用样本。
+
+## L4.8 可以继续问的问题
 
 - 为什么改写问答只改"问法"，答案也要模型写？答案写错了怎么办？
 - `check_sample` 和运行时校验是同一套代码吗？为什么强调"相同"？

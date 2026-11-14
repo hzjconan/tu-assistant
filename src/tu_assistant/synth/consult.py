@@ -62,21 +62,27 @@ def generate(
     titles = doc_titles(kb_conn)
 
     samples = []
+    progress_every = cfg.get("progress_every", 50)
     # 单违法行为
-    for c in clauses[:n_single]:
+    for idx, c in enumerate(clauses[:n_single], 1):
         samples += _gen_one(
             llm, [c], titles, "含一个违法行为",
             "如存在信息缺口，回答中注明依赖未确认事实的部分。",
         )
+        if progress_every and idx % progress_every == 0:
+            print(f"consult single progress: {idx}/{n_single}")
     # 多违法行为：随机取 2 条（尽量不同文件）
     pool = clauses[n_single:]
     rng.shuffle(pool)
-    for i in range(0, min(n_multi * 2, len(pool) - 1), 2):
+    n_multi_pairs = min(n_multi, max(0, (len(pool) - 1) // 2))
+    for idx, i in enumerate(range(0, n_multi_pairs * 2, 2), 1):
         pair = [pool[i], pool[i + 1]]
         samples += _gen_one(
             llm, pair, titles, "含两个独立违法行为，可能涉及不同违法主体",
             "逐一识别每个违法行为，不要漏掉任何一个。",
         )
+        if progress_every and idx % progress_every == 0:
+            print(f"consult multi progress: {idx}/{n_multi_pairs}")
     return samples
 
 

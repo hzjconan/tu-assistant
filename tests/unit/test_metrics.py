@@ -5,6 +5,9 @@ from tu_assistant.eval.metrics import (
     citation_accuracy,
     citation_completeness,
     clause_recall_precision,
+    intent_score,
+    multi_violation_score,
+    refusal_correct,
 )
 
 
@@ -50,3 +53,30 @@ class TestCitationAccuracy:
         cs = [self._c("ok"), self._c("incomplete")]
         acc = citation_accuracy(cs)
         assert acc["n"] == 1 and acc["pre"] == 1.0
+
+
+class TestBehaviorMetrics:
+    def test_multi_violation_hits_any_gold_clause(self):
+        gold = [
+            {"actor": "用人单位", "clauses": ["d:a1", "d:a2"]},
+            {"actor": "工会", "clauses": ["d:a8"]},
+            {"actor": "个人", "clauses": ["d:a9"]},
+        ]
+        score = multi_violation_score({"d:a2", "d:a8", "d:x"}, gold)
+        assert score == 2 / 3
+
+    def test_refusal_correct_both_directions(self):
+        assert refusal_correct("抱歉，这超出了我的知识范围。", True)
+        assert not refusal_correct("可以回答，条款如下。", True)
+        assert not refusal_correct("抱歉，我无法回答。", False)
+        assert refusal_correct("可以回答，条款如下。", False)
+
+    def test_intent_within_three_turns(self):
+        turns = [
+            {"intent": None},
+            {"intent": "consult"},
+            {"intent": "article"},
+        ]
+        assert intent_score(turns, {"intent": "consult"}) == 1.0
+        assert intent_score(turns[:1], {"intent": "consult"}) == 0.0
+        assert intent_score(turns, {"intent": "missing"}) == 0.0

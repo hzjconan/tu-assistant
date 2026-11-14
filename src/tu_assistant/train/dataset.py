@@ -19,6 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from ..citation.verify import verify_output
 from ..manifest import write_manifest
 
 
@@ -76,6 +77,73 @@ def balance_by_doc(
     return out
 
 
+def load_message_samples(dataset_dir: str | Path, kb_conn=None) -> list[dict]:
+    """读取已写出的 messages JSONL，并重建生成侧 meta（用于数据增补）。
+
+    写出的数据集不含 meta；增补时根据会话结构与助手文本推断类型，
+    并通过出处校验层把引用解析回 clause_id/doc_id。
+    """
+    samples: list[dict] = []
+    root = Path(dataset_dir)
+    for split in ("train", "valid"):
+        path = root / f"{split}.jsonl"
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            messages = json.loads(line)["messages"]
+            samples.append(
+                {"messages": messages,
+                 "meta": _infer_meta(messages, kb_conn)}
+            )
+    return samples
+
+
+def _infer_meta(messages: list[dict], kb_conn=None) -> dict:
+    assistant_text = next(
+        (m["content"] for m in reversed(messages) if m.get("role") == "assistant"),
+        "",
+    )
+    if messages and messages[0].get("role") == "system":
+        sample_type = "intent"
+    elif "暂不支持" in assistant_text or "超出了我的知识范围" in assistant_text:
+        sample_type = "refusal"
+    elif "违法行为认定" in assistant_text:
+        sample_type = "consult"
+    elif "以案说法" in assistant_text and "普法提示" in assistant_text:
+        sample_type = "article"
+    else:
+        sample_type = "knowledge"
+
+    clause_ids: list[str] = []
+    if kb_conn is not None and assistant_text:
+        clause_ids = [
+            c.resolved_clause_id for c in verify_output(assistant_text, kb_conn).citations
+            if c.resolved_clause_id
+        ]
+    return {
+        "type": sample_type,
+        "doc_id": clause_ids[0].split(":", 1)[0] if clause_ids else None,
+        "clause_ids": clause_ids,
+    }
+
+
+def oversample_train(
+    samples: list[dict], factors: dict[str, int], *, seed: int = 42
+) -> list[dict]:
+    """只在训练侧重复少数类型样本；验证集保持真实分布。"""
+    if not factors:
+        return samples
+    out: list[dict] = []
+    for s in samples:
+        factor = factors.get(s.get("meta", {}).get("type"), 1)
+        out.extend([s] * max(1, int(factor)))
+    rng = random.Random(seed)
+    rng.shuffle(out)
+    return out
+
+
 def split_train_valid(
     samples: list[dict], *, valid_ratio: float = 0.1, seed: int = 42
 ) -> tuple[list[dict], list[dict]]:
@@ -97,11 +165,14 @@ def write_dataset(
     generator: dict[str, Any],
     eval_set_version: str | None = None,
     seed: int = 42,
+    train_oversample: dict[str, int] | None = None,
 ) -> dict:
     """写 train.jsonl / valid.jsonl / manifest.json，返回汇总。"""
     out = Path(out_dir) / dataset_id
     out.mkdir(parents=True, exist_ok=True)
     train, valid = split_train_valid(samples, seed=seed)
+    base_train_size = len(train)
+    train = oversample_train(train, train_oversample or {}, seed=seed)
 
     for name, rows in (("train", train), ("valid", valid)):
         with (out / f"{name}.jsonl").open("w", encoding="utf-8") as f:
@@ -109,19 +180,24 @@ def write_dataset(
                 f.write(json.dumps({"messages": s["messages"]}, ensure_ascii=False) + "\n")
 
     counts: dict[str, int] = defaultdict(int)
+    train_counts: dict[str, int] = defaultdict(int)
     for s in samples:
         counts[s.get("meta", {}).get("type", "unknown")] += 1
+    for s in train:
+        train_counts[s.get("meta", {}).get("type", "unknown")] += 1
 
     write_manifest(
         out,
         artifact_id=dataset_id,
         artifact_type="dataset",
         inputs={"kb_version": kb_version},
-        config=generator,
+        config={**generator, "train_oversample": train_oversample or {}},
         seed=seed,
         extra={
             "stage": "sft",
             "counts": dict(counts),
+            "train_counts": dict(train_counts),
+            "base_train_size": base_train_size,
             "train_size": len(train),
             "valid_size": len(valid),
             "dedup_against": eval_set_version,

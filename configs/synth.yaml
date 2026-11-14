@@ -9,8 +9,26 @@ external_llm:
 # 知识类样本：每条条款改写的倍数（research R4：POC 用 3–5，先跑通不够再加）
 rewrite_factor: 4
 
+# 行为类样本数量。POC 先补到约占训练有效样本 10–20%，
+# 若评测仍显示追问/拒答行为不稳，再继续增加。
+behavior:
+  intent_samples: 240        # 三种变体均分（normal / skip / switch）
+  consult_single: 160        # 单违法行为
+  consult_multi: 80          # 多违法行为，每条样本用两个条款
+  refusal_rewrites: 6        # 每个拒答模板的改写次数
+
+# 只在 train 侧重复行为类样本，valid 保持原始分布，避免同一多轮对话泄漏。
+train_oversample:
+  intent: 4
+  consult: 4
+  refusal: 4
+
 # 通用对话样本混入比例，防止模型退化（research R4）
 general_ratio: 0.05
+general_batch_size: 10
+
+# 合成进度输出间隔（条）；0 = 不输出
+progress_every: 25
 
 # 提示词版本号，随样本记录进清单，便于追踪与复现
 prompt_version: "v1"

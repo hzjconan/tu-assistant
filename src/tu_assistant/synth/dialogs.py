@@ -69,8 +69,9 @@ def generate(
 
     samples = []
     per_variant = max(1, n_per_variant // len(VARIANTS))
+    progress_every = cfg.get("progress_every", 50)
     for variant, instruction in VARIANTS.items():
-        for c in clauses[:per_variant]:
+        for idx, c in enumerate(clauses[:per_variant], 1):
             title, version = titles[c.doc_id]
             max_q = rng.randint(2, 6)
             out = llm.chat(
@@ -102,6 +103,8 @@ def generate(
                              "doc_id": c.doc_id, "clause_ids": [c.clause_id]},
                 }
             )
+            if progress_every and idx % progress_every == 0:
+                print(f"dialog progress: {variant} {idx}/{per_variant}")
     return samples
 
 

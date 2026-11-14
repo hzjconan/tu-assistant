@@ -16,8 +16,11 @@
 
 | 命令 | 说明 | 产物 |
 |---|---|---|
-| `tu synth sft --kb <ver>` | 生成训练样本（知识类 + 行为类，见 research R3） | `dataset_id` + manifest |
-| `tu synth evalcases --kb <ver>` | 生成评测候选用例（需人工校验后才能进入评测集） | `eval/cases/candidates/*.jsonl` |
+| `tu synth sft --kb-version <ver>` | 生成训练样本（知识类 + 行为类 + 约 5% 通用对话，见 research R3） | `dataset_id` + manifest |
+| `tu synth sft --reuse-dataset <dir> [--reuse-only]` | 复用已有 messages；`--reuse-only` 只重新检查/均衡/切分，不再生成 | `dataset_id` + manifest |
+| `tu synth evalcases --kb-version <ver>` | 生成评测候选用例（需人工校验后才能进入评测集） | `eval/cases/candidates/*.jsonl` |
+| `tu eval cases review <file>` | 按行号核对候选用例的问题与 gold 条款，写入 `confirmed` | 更新候选 JSONL |
+| `tu eval cases promote <file>` | 把 `confirmed=true` 的候选写入正式评测集并改 `source=synthetic_reviewed` | `eval/cases/v1/*.jsonl` |
 | `tu train --config configs/train/<name>.yaml` | 本机 MLX QLoRA 训练 | `exp_id` + 适配器 + 日志 |
 
 ## 运行
@@ -32,7 +35,7 @@
 
 | 命令 | 说明 | 产物 |
 |---|---|---|
-| `tu eval run --exp <exp_id> --kb <ver> --cases <eval_set_version>` | 运行评测（不调用外部服务） | `run_id`、`report.md`、`results.jsonl` |
+| `tu eval run --exp <exp_id> --kb-version <ver> --cases <path>` | 运行评测（不调用外部服务） | `run_id`、`report.md`、`results.jsonl` |
 | `tu eval compare <run_id>...` | 对比多次评测（同一评测集与口径），用于看数据调整前后的变化 | `compare.md` |
 
 POC 阶段人工评审意见用表格记录（spec FR-037）。

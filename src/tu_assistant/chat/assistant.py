@@ -11,6 +11,7 @@ from typing import Protocol
 
 from ..citation.models import Citation
 from ..runtime.client import ModelClient
+from .export import export_markdown
 from .orchestrator import process_turn
 from .session import Session, new_session
 
@@ -86,12 +87,7 @@ class TrainedAssistant:
         )
 
     def export_markdown(self, session_id: str, turn_index: int | None = None) -> str:
-        session = self._sessions[session_id]
-        replies = [t for t in session.messages if t.role == "assistant"]
-        if not replies:
-            return ""
-        turn = replies[turn_index if turn_index is not None else -1]
-        return turn.content
+        return export_markdown(self._sessions[session_id], turn_index)
 
     def close(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
