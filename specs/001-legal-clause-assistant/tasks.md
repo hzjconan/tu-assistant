@@ -128,7 +128,9 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 - [x] T048 [P] [US1] 实现多违法行为与关联补全指标（SC-004、SC-005）、拒答与误拒指标（SC-008）、意图确认指标（SC-001：3 轮内正确确认的比例）于 `src/tu_assistant/eval/metrics.py`，并补充 `tests/unit/test_metrics.py`
 - [ ] T049 [US1] 编写评测集 v1 的多违法行为与意图确认（固定对话脚本）用例约 20 题，加入 `eval/cases/v1/`，由用户审阅确认
-- [ ] T050 [US1] 用 `configs/train/debug-1.5b.yaml` 训练，评测，跑通全流程（quickstart V4）；记录 loss 曲线与评测结果
+- [x] T050 [US1] 用 `configs/train/debug-1.5b.yaml` 训练，评测，跑通全流程（quickstart V4）；记录 loss 曲线与评测结果
+  - 进度：已训 `exp-20261114-120250` 并完成两轮评测（引用失败），详见 `docs/experiments/E001-1.5b-citation-failure.md`
+  - **订正（E002，2026-11-17）**：此前评测实测基座（未挂 adapter），结论作废。修复后重评：〔〕50/60（带 system）/ 60/60（无 system），条款召回 0.017/0.033 —— 格式已学会（run-20261117-085921 / -090638）；~~容量瓶颈属实~~（E002 §6.3 订正：1.5B 用旧数据集训练，与 7B 不是对照，只能说"表现更差"，不能归因到容量）
 - [x] T051 [US1] 撰写 `docs/learning/04-training-data.md`：训练数据样例（真实生成结果）、为什么改写成问答、追问上限随机化、合成样本检查与丢弃率、评测与训练去重；更新术语表
 
 **Checkpoint**: 1.5B 模型可多轮咨询，全流程跑通（MVP 流程验证）
@@ -149,7 +151,12 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [ ] T057 [US2] 将 T052、T053 样本加入 `tu synth sft`，重新生成数据集
 - [ ] T058 [US2] 编写评测集 v1 的普法文章用例约 10 题（含评分要点 `rubric`），加入 `eval/cases/v1/`，由用户审阅确认；实现 SC-011（身份信息）自动检查于 `src/tu_assistant/eval/metrics.py`
 - [ ] T059 [US2] 用 `configs/train/demo-7b.yaml` 训练演示模型（一到两晚），评测（quickstart V5）；按评测结果调整数据后再训一次
-- [ ] T060 [US2] 撰写 `docs/learning/05-training.md`：一次训练的完整过程、超参数含义、用本项目真实日志讲解 loss 曲线、过拟合与欠拟合、1.5B 与 7B 的对比；更新术语表
+  - 进度：E001 尝试 4（方案 A）`exp-20261115-124801` 因 fp16 注意力反向溢出在 iter ~550 NaN；fp32 注意力 + NaN 守卫修复后从 iter-500 续训（`exp-20261116-resume500`，8,421 iter 零 NaN 完成，最终 val 0.472）；~~评测 `run-20261117-022645`：〔〕引用块 0/60、条款召回 0（与 iter-500 检查点逐字对比 42/60 相同）→ 路线验证未通过~~
+  - **订正（E002，2026-11-17）**：此前评测实测基座，结论作废（"42/60 逐字相同"是同基座必然）。修复后重评真实 adapter：训满版〔〕60/60、日期标签 60/60、条款召回 0.150、精确率 0.265；学习曲线 0.000（500 步）→0.083（约 4,500 步）→0.150；上海地方文件题召回 0.045 → ~~落"记忆容量不足"档，"调整数据后再训"转为待用户决策是否转 RAG（E001 尝试 5，E002 §4）~~
+  - **再订正（E002 §6 复审 + E003，2026-11-18）**："记忆容量不足"证据不足。与基座同口径对比：文件 16→45/60、条 1→17/60（p≈4e-5）、款 0→9/60，上海文件 0→14/22，SFT 有效。"调整数据后再训"以 E003 B1 执行：同一数据追加 1 epoch（`exp-e003-7b-epoch2`），训练原题显著提升、v1 几乎不变（条级 17→18/60）。**POC 训练目标判定达成**，演示用 `exp-20261116-resume500`；B2 与检索方案转正式阶段候选，见 `docs/experiments/poc-training-summary.md`
+  - **SC-016 判定（2026-11-18）**：①条级 1→17/60（p≈4e-5）②款级 9/60=15% ③基座从未识别出的文件 0→21/30（p≈4e-9），三项均满足（research R13）。文章样本合入后的再训见 T075
+- [ ] T075 [US2] T057 的数据集就绪后，从 `exp-20261116-resume500` 的 adapter 继续训练 7B（一晚以上，实测 12–14 h）；训练后先做 A/B 冒烟，再在 v1 上复评：SC-016 三项仍满足（回归门槛，依赖 T076），条级、款级命中不低于本次基线（17/60、9/60）
+- [x] T060 [US2] 撰写 `docs/learning/05-training.md`：一次训练的完整过程、超参数含义、用本项目真实日志讲解 loss 曲线、过拟合与欠拟合、1.5B 与 7B 的对比；更新术语表
 
 **Checkpoint**: 7B 演示模型可咨询、可生成普法文章
 
@@ -165,6 +172,7 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [ ] T062 [P] [US3] 实现 `tu eval compare <run_id>...` 于 `src/tu_assistant/eval/compare.py`：同一评测集与口径的版本对比，输出 `compare.md`（FR-035）
 - [ ] T063 [P] [US3] 提供人工评审表格模板 `eval/review-template.csv`（列：`run_id`、`case_id`、`reviewer`、`verdict`（pass / minor_issue / fail）、`comment`、`created_at`），并在 `report.md` 中按 `case_id` 列出待评审的普法文章（FR-037，POC 用表格记录）
 - [ ] T064 [US3] 对 7B 演示模型重复评测 2 次，用 `tu eval compare` 验证指标波动 ≤2 个百分点（SC-015），结果存于 `artifacts/eval/`
+- [ ] T076 [P] [US3] 实现 SC-016 判定（`src/tu_assistant/eval/compare.py`，可由 `tu eval compare` 调用）：输入基座与自训模型在同一评测集上的两个 run，输出三项条件的命中数与 Fisher 精确检验 p 值；口径沿用 `scripts/experiments/e002/review_stats.py` 与 `scripts/experiments/e003/sc016.py`（宽松解析定位到条/文件、严格解析定位到款）；补单元测试
 - [ ] T065 [US3] 撰写 `docs/learning/06-evaluation.md`：各指标计算方法、校验前 / 后两种准确率的含义、用本项目评测结果分析薄弱类别并反推数据改进方向；更新术语表
 
 **Checkpoint**: 评测报告完整、可对比、可复现
@@ -205,8 +213,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - **Setup (Phase 1)**：无依赖
 - **Foundational (Phase 2)**：依赖 Setup；阻塞所有用户故事。T016 需要 `inputs/project/` 已就位（已就位，24 篇）；T019、T038 需要用户参与
 - **US1 (Phase 3)**：依赖 Foundational
-- **US2 (Phase 4)**：依赖 US1 的数据合成框架（T044）与编排（T045）；7B 训练（T059）使用 US1 + US2 的全部数据
-- **US3 (Phase 5)**：依赖 Foundational 的评测核心；T064 依赖 T059
+- **US2 (Phase 4)**：依赖 US1 的数据合成框架（T044）与编排（T045）；7B 首训（T059）只用了 US1 数据；合入 US2 文章数据后的再训由 T075 承担（依赖 T057）
+- **US3 (Phase 5)**：依赖 Foundational 的评测核心；T064 依赖 T059；T075 的回归判定依赖 T076（T076 可提前实现）
 - **US4 (Phase 6)**：依赖 Foundational 的知识库模块，可与 US1–US3 并行
 - **Phase 7**：依赖 US1、US2（演示内容）
 

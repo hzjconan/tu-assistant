@@ -118,11 +118,16 @@
 | `category` | enum | `clause_id` / `multi_violation` / `exception` / `refusal` / `false_refusal` / `intent` / `article` |
 | `input` | object | 单轮：`{"message": str}`；多轮：`{"script": [str, ...]}`（固定对话脚本，预先写好用户每轮说的话） |
 | `gold` | object | 标准答案：`clauses`（应引用的条款 ID 集合）、`violations`（主体 + 条款）、`intent`、`should_refuse`、评分要点 `rubric` |
-| `source` | enum | `public_case` / `manual` / `synthetic_reviewed` |
+| `source` | enum | `public_case` / `manual` / `synthetic_reviewed` / `train_probe`（仅诊断集，见下） |
 | `eval_set_version` | str | 所属评测集版本 |
 
 **校验规则**：`gold.clauses` 中的条款必须存在于对应知识库版本；`source=synthetic_reviewed` 须有人工校验记录；
 任何用例不得来自真实用户对话（宪章原则 III）。
+
+**诊断集（不是评测集）**：`eval/diagnostics/*.jsonl` 沿用 EvalCase 格式，用于定位问题（如 E003 的训练原题
+记忆测试），其中 `source=train_probe` 的用例取自训练数据。诊断集**不属于标准评测集**：不得放入
+`eval/cases/`，不得用于任何 SC 判定或方案对比结论（宪章原则 V"评测用例的问法与训练数据不同"只约束
+标准评测集），也不参与训练数据的评测集去重。
 
 ### EvalRun（一次评测）
 
