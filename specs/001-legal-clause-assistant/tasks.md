@@ -172,7 +172,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [ ] T062 [P] [US3] 实现 `tu eval compare <run_id>...` 于 `src/tu_assistant/eval/compare.py`：同一评测集与口径的版本对比，输出 `compare.md`（FR-035）
 - [ ] T063 [P] [US3] 提供人工评审表格模板 `eval/review-template.csv`（列：`run_id`、`case_id`、`reviewer`、`verdict`（pass / minor_issue / fail）、`comment`、`created_at`），并在 `report.md` 中按 `case_id` 列出待评审的普法文章（FR-037，POC 用表格记录）
 - [ ] T064 [US3] 对 7B 演示模型重复评测 2 次，用 `tu eval compare` 验证指标波动 ≤2 个百分点（SC-015），结果存于 `artifacts/eval/`
-- [ ] T076 [P] [US3] 实现 SC-016 判定（`src/tu_assistant/eval/compare.py`，可由 `tu eval compare` 调用）：输入基座与自训模型在同一评测集上的两个 run，输出三项条件的命中数与 Fisher 精确检验 p 值；口径沿用 `scripts/experiments/e002/review_stats.py` 与 `scripts/experiments/e003/sc016.py`（宽松解析定位到条/文件、严格解析定位到款）；补单元测试
+- [x] T076 [P] [US3] 实现 SC-016 判定（`src/tu_assistant/eval/compare.py`，可由 `tu eval compare` 调用）：输入基座与自训模型在同一评测集上的两个 run，输出三项条件的命中数与 Fisher 精确检验 p 值；口径沿用 `scripts/experiments/e002/review_stats.py` 与 `scripts/experiments/e003/sc016.py`（宽松解析定位到条/文件、严格解析定位到款）；补单元测试
+  - 2026-11-18 独立复审通过。`uv run tu eval compare --sc016 run-20261117-022645 run-20261117-081504` 复现条级 1/60 → 17/60、款级 9/60、文件子集 0/30 → 21/30，退出 0。详见[执行单第 11 节](../../docs/handoffs/T076-sc016-handoff.md#11-最终复审通过2026-11-18)。
 - [ ] T065 [US3] 撰写 `docs/learning/06-evaluation.md`：各指标计算方法、校验前 / 后两种准确率的含义、用本项目评测结果分析薄弱类别并反推数据改进方向；更新术语表
 
 **Checkpoint**: 评测报告完整、可对比、可复现

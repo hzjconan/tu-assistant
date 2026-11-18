@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -713,6 +714,81 @@ def eval_run(
             f"注意：{len(result['gold_issues'])} 个 gold 条款在知识库中不存在",
             fg="yellow",
         )
+
+
+@eval_app.command("compare")
+def eval_compare(
+    runs: Annotated[list[str], typer.Argument(help="两个 run ID：<基座> <自训>")],
+    sc016: bool = typer.Option(
+        False, "--sc016", help="按 spec SC-016 判定（POC 验收/回归门槛）"
+    ),
+    artifacts: str = typer.Option("artifacts"),
+) -> None:
+    """对比两个评测 run；--sc016 输出 SC-016 判定（通用对比由 T062 实现）。"""
+    from .eval.compare import (
+        CompareError,
+        align_cases,
+        comparability_issues,
+        load_doc_index,
+        load_run,
+        resolve_kb_path,
+        role_issues,
+    )
+    from .eval.compare import (
+        sc016 as run_sc016,
+    )
+
+    if not sc016:
+        typer.echo("目前仅支持 --sc016；通用多 run 对比由 T062 实现", err=True)
+        raise typer.Exit(2)
+    if len(runs) != 2:
+        typer.echo("--sc016 需要恰好两个 run ID：<基座> <自训>", err=True)
+        raise typer.Exit(2)
+    try:
+        base, trained = load_run(artifacts, runs[0]), load_run(artifacts, runs[1])
+        issues = comparability_issues(base, trained) + role_issues(base, trained)
+        aligned = align_cases(base, trained)
+        docs = load_doc_index(resolve_kb_path(base.manifest, artifacts))
+        res = run_sc016(aligned, docs)
+    except CompareError as e:
+        typer.echo(f"输入错误：{e}", err=True)
+        raise typer.Exit(2) from e
+    if issues:
+        for i in issues:
+            typer.echo(f"无法确认：{i}", err=True)
+        typer.secho("总判定：无法判定（输入可比性无法确认）", fg="red", err=True)
+        raise typer.Exit(1)
+
+    bm = (base.manifest.get("config") or {}).get("model")
+    tm = (trained.manifest.get("config") or {}).get("model")
+    typer.echo(f"SC-016 判定（{res.n} 条 clause_id 用例）")
+    typer.echo(f"  基座 run：{base.run_id}（model={bm}）")
+    typer.echo(f"  自训 run：{trained.run_id}（model={tm}）")
+
+    def mark(ok: bool | None) -> str:
+        return "PASS" if ok else ("无法判定" if ok is None else "FAIL")
+
+    typer.echo(
+        f"  ① 条级命中：基座 {res.cond1_base}/{res.n}，自训 {res.cond1_trained}/{res.n}；"
+        f"Fisher 双侧 p={res.cond1_p:.3g} → {mark(res.cond1_ok)}"
+    )
+    typer.echo(
+        f"  ② 款/项级精确命中：{res.cond2_trained}/{res.n} = "
+        f"{res.cond2_ratio:.1%}（阈值 ≥10%）→ {mark(res.cond2_ok)}"
+    )
+    if res.cond3_ok is None:
+        typer.echo("  ③ 基座从未识别的文件子集为空 → 无法判定")
+    else:
+        typer.echo(
+            f"  ③ 基座从未识别的文件子集（{res.subset_n} 题）：文件命中 基座 "
+            f"{res.cond3_base}/{res.subset_n}，自训 {res.cond3_trained}/{res.subset_n}；"
+            f"p={res.cond3_p:.3g} → {mark(res.cond3_ok)}"
+        )
+    if res.passed:
+        typer.secho("总判定：PASS", fg="green")
+        raise typer.Exit(0)
+    typer.secho("总判定：FAIL", fg="red")
+    raise typer.Exit(1)
 
 
 @app.command("chat")
