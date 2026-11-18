@@ -117,7 +117,7 @@
 | `case_id` | str | 稳定 ID |
 | `category` | enum | `clause_id` / `multi_violation` / `exception` / `refusal` / `false_refusal` / `intent` / `article` |
 | `input` | object | 单轮：`{"message": str}`；多轮：`{"script": [str, ...]}`（固定对话脚本，预先写好用户每轮说的话） |
-| `gold` | object | 标准答案：`clauses`（应引用的条款 ID 集合）、`violations`（主体 + 条款）、`intent`、`should_refuse`、评分要点 `rubric` |
+| `gold` | object | 标准答案：`clauses`（应引用的条款 ID 集合）、`violations`（主体 + 条款）、`intent`、`should_refuse`、评分要点 `rubric`；文章题另用 `expect_articles`（逐轮期望篇数，list——`null` 表示该轮不要求交稿）与 `protected_names`（`[{"name", "turn"}]`，名称自标注用户轮次起受保护） |
 | `source` | enum | `public_case` / `manual` / `synthetic_reviewed` / `train_probe`（仅诊断集，见下） |
 | `eval_set_version` | str | 所属评测集版本 |
 

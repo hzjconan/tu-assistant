@@ -149,7 +149,7 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [ ] T055 [P] [US2] 单元测试 `tests/unit/test_anonymize.py`：真实名称被替换、虚构名称不受影响
 - [ ] T056 [US2] 在 `src/tu_assistant/chat/orchestrator.py` 中接入文章数量（默认 3，上限 10，读取 `SessionConfig`）与身份信息检查（依赖 T054）
 - [ ] T057 [US2] 将 T052、T053 样本加入 `tu synth sft`，重新生成数据集
-- [ ] T058 [US2] 编写评测集 v1 的普法文章用例约 10 题（含评分要点 `rubric`），加入 `eval/cases/v1/`，由用户审阅确认；实现 SC-011（身份信息）自动检查于 `src/tu_assistant/eval/metrics.py`
+- [x] T058 [US2] 编写评测集 v1 的普法文章用例约 10 题（含评分要点 `rubric`），加入 `eval/cases/v1/`，由用户审阅确认；实现 SC-011（身份信息）自动检查于 `src/tu_assistant/eval/metrics.py`
 - [ ] T059 [US2] 用 `configs/train/demo-7b.yaml` 训练演示模型（一到两晚），评测（quickstart V5）；按评测结果调整数据后再训一次
   - 进度：E001 尝试 4（方案 A）`exp-20261115-124801` 因 fp16 注意力反向溢出在 iter ~550 NaN；fp32 注意力 + NaN 守卫修复后从 iter-500 续训（`exp-20261116-resume500`，8,421 iter 零 NaN 完成，最终 val 0.472）；~~评测 `run-20261117-022645`：〔〕引用块 0/60、条款召回 0（与 iter-500 检查点逐字对比 42/60 相同）→ 路线验证未通过~~
   - **订正（E002，2026-11-17）**：此前评测实测基座，结论作废（"42/60 逐字相同"是同基座必然）。修复后重评真实 adapter：训满版〔〕60/60、日期标签 60/60、条款召回 0.150、精确率 0.265；学习曲线 0.000（500 步）→0.083（约 4,500 步）→0.150；上海地方文件题召回 0.045 → ~~落"记忆容量不足"档，"调整数据后再训"转为待用户决策是否转 RAG（E001 尝试 5，E002 §4）~~

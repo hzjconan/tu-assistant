@@ -17,6 +17,9 @@ from ..manifest import write_manifest
 from ..runtime.client import ModelClient
 from .cases import EvalCase, load_cases, validate_gold_clauses
 from .metrics import (
+    article_identity_check,
+    article_refusal_correct,
+    extract_articles,
     intent_score,
     multi_violation_score,
     refusal_correct,
@@ -85,6 +88,32 @@ def _render_report(run_id: str, exp_id: str | None, results: list[dict]) -> str:
             [r["scores"].get(key) for r in results if key in r["scores"]]
         )
 
+    # SC-011：有身份标注的文章题，按篇累计未泄露 / 可评；
+    # "覆盖"区分有标注的题和实际有可评文章的题，让分母可还原
+    id_pass = id_total = id_cases = id_eval_cases = 0
+    for r in results:
+        ic = r["scores"].get("identity_check") or {}
+        if "passed" in ic:
+            id_cases += 1
+            if ic["total"]:
+                id_eval_cases += 1
+                id_pass += ic["passed"]
+                id_total += ic["total"]
+    ac_ok = ac_n = 0
+    for r in results:
+        ac = r["scores"].get("article_count") or {}
+        if "ok" in ac:
+            ac_n += 1
+            ac_ok += 1 if ac["ok"] else 0
+
+    def _sc011() -> str:
+        if not id_cases:
+            return "-（无身份标注题）"
+        cov = f"标注 {id_cases} 题，其中 {id_eval_cases} 题有可评文章"
+        if not id_total:
+            return f"-（{cov}）"
+        return f"{id_pass}/{id_total}（{cov}）"
+
     lines = [
         f"# 评测报告 {run_id}",
         "",
@@ -103,6 +132,12 @@ def _render_report(run_id: str, exp_id: str | None, results: list[dict]) -> str:
         f"| 拒答正确率 | {_fmt(_cat_mean('refusal_correct'))} | SC-008 |",
         f"| 多违规识别率 | {_fmt(_cat_mean('multi_violation'))} | SC-004 |",
         f"| 意图确认 | {_fmt(_cat_mean('intent'))} | SC-001 |",
+        f"| 文章身份检查 | {_sc011()} | SC-011 |",
+        (
+            f"| 文章篇数符合 | {ac_ok}/{ac_n} 题 | FR-028 |"
+            if ac_n
+            else "| 文章篇数符合 | - | FR-028 |"
+        ),
         "",
         "## 引用判定分布",
         "",
@@ -172,6 +207,40 @@ def run_eval(
             )
         if case.category == "intent":
             r["scores"]["intent"] = intent_score(r["turns"], case.gold)
+        if case.category == "article":
+            chk = article_identity_check(
+                r["turns"], case.gold.get("protected_names")
+            )
+            r["scores"]["identity_check"] = (
+                chk if chk is not None else {"skipped": "无保护名称标注"}
+            )
+            if case.gold.get("expect_articles") is not None:
+                counts = [
+                    len(extract_articles(t.get("content") or ""))
+                    for t in r["turns"]
+                ]
+                # expect_articles：int → 核对最后一轮；list → 逐轮核对
+                # （null = 该轮是咨询等不要求交稿，不计）
+                exp = case.gold["expect_articles"]
+                if isinstance(exp, int):
+                    checks = {len(counts) - 1: exp}
+                else:
+                    checks = {
+                        i: e for i, e in enumerate(exp) if e is not None
+                    }
+                ok = bool(checks) and all(
+                    i < len(counts) and counts[i] == e
+                    for i, e in checks.items()
+                )
+                r["scores"]["article_count"] = {
+                    "expected": exp,
+                    "per_turn": counts,
+                    "ok": ok,
+                }
+            if case.gold.get("should_refuse"):
+                r["scores"]["refusal_correct"] = article_refusal_correct(
+                    r["final_text"]
+                )
         results.append(r)
 
     results_path = out_dir / "results.jsonl"

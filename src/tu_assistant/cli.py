@@ -596,6 +596,21 @@ def eval_cases_review(
                 typer.echo(f"        {clause.text}")
             else:
                 typer.echo(f"  gold: {cid}（未在库中找到）")
+        for i, line in enumerate(row.get("gold", {}).get("rubric", []), 1):
+            typer.echo(f"  rubric[{i}]: {line}")
+        for pn in row.get("gold", {}).get("protected_names", []):
+            typer.echo(f"  保护名称: {pn['name']}（第 {pn['turn']} 轮用户提供）")
+        exp = row.get("gold", {}).get("expect_articles")
+        if exp is not None:
+            if isinstance(exp, list):
+                parts = "；".join(
+                    f"第{i + 1}轮{n}篇" for i, n in enumerate(exp) if n is not None
+                )
+                typer.echo(f"  期望篇数: {parts}")
+            else:
+                typer.echo(f"  期望篇数: {exp}")
+        if row.get("gold", {}).get("should_refuse"):
+            typer.echo("  预期: 应拒答")
 
     typer.echo(
         f"共 {len(rows)} 条。用法：行号=查看并标记；行号 t/f=直接标记；"
