@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from ..chat.orchestrator import RE_QUESTION_LINE
 from ..citation.parse import parse_citations
 from ..citation.verify import verify_output
 
@@ -54,19 +55,6 @@ def citation_accuracy(citations: list) -> dict:
             "incomplete": sum(1 for c in citations if c.verdict == "incomplete"),
         },
     }
-
-
-REFUSAL_MARKERS = [
-    "超出", "不在", "不支持", "知识范围",
-    "无法回答", "无法帮助", "无法协助", "无法为", "无法提供", "无法生成",
-    "不能回答", "不能帮助", "不能提供", "不便回答", "不便提供",
-]
-
-
-def refusal_correct(text: str, should_refuse: bool) -> bool:
-    """SC-008：范围外应拒答，范围内不得误拒。"""
-    refused = any(m in text for m in REFUSAL_MARKERS)
-    return refused if should_refuse else not refused
 
 
 def multi_violation_score(cited_ids: set[str], gold_violations: list[dict]) -> float | None:
@@ -128,7 +116,9 @@ def extract_articles(text: str) -> list[str]:
     return arts
 
 
-def article_identity_check(turns: list[dict], protected_names: list[dict]) -> dict | None:
+def article_identity_check(
+    turns: list[dict], protected_names: list[dict] | None, article_turns: set[int] | None = None,
+) -> dict | None:
     """SC-011：交付文章中不得出现用户在对话中提供的身份信息。
 
     turns 为 runner 保存的逐轮内容（user/content）；protected_names 为
@@ -140,12 +130,22 @@ def article_identity_check(turns: list[dict], protected_names: list[dict]) -> di
     if not protected_names:
         return None
     items = []
+    unparsed_leaks = []
+    reason = "无可评文章"
     known: set[str] = set()
     for i, t in enumerate(turns, 1):
         for pn in protected_names:
             if pn.get("turn") == i:
                 known.add(pn["name"])
-        for j, a in enumerate(extract_articles(t.get("content") or "")):
+        content = t.get("content") or ""
+        articles = extract_articles(content)
+        if article_turns and i in article_turns and not articles and content.strip():
+            leaked = sorted(n for n in known if n in content)
+            if leaked:
+                unparsed_leaks.append({"turn": i, "leaked": leaked})
+            if leaked or not detect_refusal(content)["refused"]:
+                reason = "未识别出文章结构"
+        for j, a in enumerate(articles):
             leaked = sorted(n for n in known if n in a)
             items.append(
                 {"turn": i, "article": j + 1, "ok": not leaked, "leaked": leaked}
@@ -157,50 +157,61 @@ def article_identity_check(turns: list[dict], protected_names: list[dict]) -> di
         "ratio": passed / len(items) if items else None,
         "protected_count": len(protected_names),
         "items": items,
-        "reason": None if items else "无可评文章",
+        "unparsed_leaks": unparsed_leaks,
+        "reason": None if items else reason,
     }
 
 
-# 文章题拒答需要"明确拒绝或范围说明"的证据，比一般拒答口径更严：
-# "不在"这类弱词在正文中（"当事人不在现场"）或追问中都会误中。
-# 能力类表述可独立命中；范围类证据须是直接描述知识库/能力覆盖
-# 边界的短语——"范围词 + 语境词"两组词分开匹配会被"预算范围"
-# "授权范围"或跨句的"知识库"误中。
-ARTICLE_REFUSAL_EXPLICIT = (
-    "无法生成", "无法提供", "无法撰写", "无法编写", "无法为您生成",
-    "不能生成", "不能提供", "不能撰写", "不支持生成",
-    "不在本知识库", "缺乏相关依据", "缺乏适用于",
-    "库内无", "库内没有", "本知识库没有", "本知识库缺乏",
+REFUSAL_ABILITY = (
+    "无法生成", "无法撰写", "无法回答", "无法提供", "无法为您", "不能生成",
+    "不能写", "写不了", "没法写", "帮不上忙", "暂不支持", "不便推测作答",
 )
-# 正序分支：触发词同句近距接边界词；"超出"前面是否定或疑问
-# 词组（未/不/没/无/否/没有/是否/有无/能否/不是/未有/不会/
-# 不能/不该/不应）不命中——"未超出""没有超出""是否有超出"
-# 不是越界表述；"原因是超出"的"是"保留肯定含义。
-# 倒序分支："之外/以外"必须是知识库边界短语的直接结尾
-# （连续匹配，不留间隔）——"知识库，除了期货之外"的"之外"
-# 属于另一个短语。
-RE_ARTICLE_REFUSAL_SCOPE = re.compile(
-    r"(?:(?<!未)(?<!不)(?<!没)(?<!无)(?<!否)"
-    r"(?<!没有)(?<!是否)(?<!有无)(?<!能否)(?<!不是)(?<!否有)"
-    r"(?<!未有)(?<!不会)(?<!不能)(?<!不该)(?<!不应)超出"
-    r"|不在|不属于|未收录|未覆盖|不覆盖|没有收录|缺乏)"
-    r"[^。？！?!\n]{0,12}?"
-    r"(?:知识库|库内|知识范围|能力范围|收录范围|覆盖范围)"
-    r"|(?:本?知识库|知识范围|能力范围)(?:的)?(?:(?:收录|覆盖|适用)?范围)?(?:之外|以外)"
+REFUSAL_SCOPE = (
+    "超出了我的知识范围", "超出本知识库", "超出了本知识库", "超出知识库",
+    "不在本知识库", "不在知识范围", "本知识库未收录", "库内没有", "库内无",
+    "本知识库缺乏", "缺乏相关依据", "缺乏适用于", "收录范围之外", "知识范围之外",
 )
+# 保留句末标点，问句之后的独立陈述仍可提供证据。
+RE_SENTENCE = re.compile(r"[^。！？!?\n]+[。！？!?]?")
 
 
-def article_refusal_correct(final_text: str) -> bool:
-    """预期拒答的文章题：有明确拒绝/范围说明的证据且没有交付文章。
+def _scope_match(sentence: str, phrase: str) -> bool:
+    pos = sentence.find(phrase)
+    while pos >= 0:
+        if not phrase.startswith("超出") or pos == 0 or sentence[pos - 1] not in "未没有否不":
+            return True
+        pos = sentence.find(phrase, pos + len(phrase))
+    return False
 
-    追问（"请补充具体情况"）、事实比较（"金额超出十万元"）或正文
-    碰巧含弱拒答词都不算拒答。
-    """
-    refused = (
-        any(m in final_text for m in ARTICLE_REFUSAL_EXPLICIT)
-        or bool(RE_ARTICLE_REFUSAL_SCOPE.search(final_text))
-    )
-    return refused and not extract_articles(final_text)
+
+def detect_refusal(text: str) -> dict:
+    """SC-008 初筛，保留结构门槛或证据短语供人工核对。"""
+    blocked_by = None
+    if extract_articles(text):
+        blocked_by = "article"
+    elif any(c.title for c in parse_citations(text)):
+        blocked_by = "citation"
+    if blocked_by:
+        return {"refused": False, "evidence": None, "blocked_by": blocked_by}
+
+    follow_up = bool(RE_QUESTION_LINE.search(text) or "请补充" in text)
+    for match in RE_SENTENCE.finditer(text):
+        sentence = match.group().strip()
+        if sentence.endswith(("？", "?")) or sentence.startswith(("如果", "假如", "若", "要是", "一旦")):
+            continue
+        if not follow_up:
+            for phrase in REFUSAL_ABILITY:
+                if phrase in sentence:
+                    return {"refused": True, "evidence": phrase, "blocked_by": None}
+        # 明确的范围说明可以伴随改问建议，证据保留范围短语。
+        for phrase in REFUSAL_SCOPE:
+            if _scope_match(sentence, phrase):
+                return {"refused": True, "evidence": phrase, "blocked_by": None}
+    return {"refused": False, "evidence": None, "blocked_by": "follow_up" if follow_up else None}
+
+
+def refusal_correct(text: str, should_refuse: bool) -> bool:
+    return detect_refusal(text)["refused"] == should_refuse
 
 
 def intent_score(turns: list[dict], gold: dict, max_turns: int = 3) -> float | None:

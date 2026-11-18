@@ -18,11 +18,10 @@ from ..runtime.client import ModelClient
 from .cases import EvalCase, load_cases, validate_gold_clauses
 from .metrics import (
     article_identity_check,
-    article_refusal_correct,
+    detect_refusal,
     extract_articles,
     intent_score,
     multi_violation_score,
-    refusal_correct,
     score_case_output,
 )
 
@@ -65,6 +64,12 @@ def _run_case(
     }
 
 
+def _expected_refusal(category: str, gold: dict) -> bool:
+    if category in {"refusal", "false_refusal"}:
+        return gold.get("should_refuse", category == "refusal")
+    return gold.get("should_refuse") is True
+
+
 def _render_report(run_id: str, exp_id: str | None, results: list[dict]) -> str:
     """按类别聚合各指标，生成 markdown 报告。"""
 
@@ -88,13 +93,35 @@ def _render_report(run_id: str, exp_id: str | None, results: list[dict]) -> str:
             [r["scores"].get(key) for r in results if key in r["scores"]]
         )
 
+    outside = []
+    regular = []
+    special = []
+    for r in results:
+        refused = r["scores"]["refusal_evidence"]["refused"]
+        if _expected_refusal(r["category"], r["gold"]):
+            outside.append(refused)
+        elif r["category"] == "false_refusal":
+            special.append(refused)
+        else:
+            regular.append(refused)
+
+    def _refusal_rate(refused: list[bool], *, count_only: bool = False) -> str:
+        if not refused:
+            return "无样本（0/0）"
+        n = sum(refused)
+        if count_only:
+            return f"{n}/{len(refused)}"
+        return f"{n / len(refused):.3f}（{n}/{len(refused)}）"
+
     # SC-011：有身份标注的文章题，按篇累计未泄露 / 可评；
     # "覆盖"区分有标注的题和实际有可评文章的题，让分母可还原
     id_pass = id_total = id_cases = id_eval_cases = 0
+    unparsed_rounds = 0
     for r in results:
         ic = r["scores"].get("identity_check") or {}
         if "passed" in ic:
             id_cases += 1
+            unparsed_rounds += len(ic.get("unparsed_leaks", []))
             if ic["total"]:
                 id_eval_cases += 1
                 id_pass += ic["passed"]
@@ -110,6 +137,8 @@ def _render_report(run_id: str, exp_id: str | None, results: list[dict]) -> str:
         if not id_cases:
             return "-（无身份标注题）"
         cov = f"标注 {id_cases} 题，其中 {id_eval_cases} 题有可评文章"
+        if unparsed_rounds:
+            cov += f"，另有 {unparsed_rounds} 轮未识别出文章结构但含保护名称"
         if not id_total:
             return f"-（{cov}）"
         return f"{id_pass}/{id_total}（{cov}）"
@@ -129,7 +158,11 @@ def _render_report(run_id: str, exp_id: str | None, results: list[dict]) -> str:
         f"| 引用准确率（校验前） | {_fmt(pre)} | ok / 全部引用 |",
         f"| 引用准确率（校验后） | {_fmt(post)} | (ok+corrected) / 全部引用 |",
         f"| 关联条款完整率 | {_fmt(_cat_mean('relation_completion'))} | SC-005 |",
-        f"| 拒答正确率 | {_fmt(_cat_mean('refusal_correct'))} | SC-008 |",
+        f"| 拒答初筛 | 范围外正确拒答 {_refusal_rate(outside)}；"
+        f"范围内误拒 {_refusal_rate(regular + special)}，"
+        f"常规题 {_refusal_rate(regular, count_only=True)}，"
+        f"专设误拒题 {_refusal_rate(special, count_only=True)} "
+        "| SC-008（自动初筛，依据见 results.jsonl 的 refusal_evidence） |",
         f"| 多违规识别率 | {_fmt(_cat_mean('multi_violation'))} | SC-004 |",
         f"| 意图确认 | {_fmt(_cat_mean('intent'))} | SC-001 |",
         f"| 文章身份检查 | {_sc011()} | SC-011 |",
@@ -196,11 +229,10 @@ def run_eval(
             "cited_clause_ids": score["cited_clause_ids"],
             "relation_completion": score["relation_completion"],
         }
-        if case.category in {"refusal", "false_refusal"}:
-            r["scores"]["refusal_correct"] = refusal_correct(
-                r["final_text"],
-                should_refuse=case.gold.get("should_refuse", True),
-            )
+        expected_refusal = _expected_refusal(case.category, case.gold)
+        detection = detect_refusal(r["final_text"])
+        r["scores"]["refusal_evidence"] = detection
+        r["scores"]["refusal_correct"] = detection["refused"] == expected_refusal
         if case.category == "multi_violation":
             r["scores"]["multi_violation"] = multi_violation_score(
                 set(score["cited_clause_ids"]), case.gold.get("violations", [])
@@ -208,26 +240,22 @@ def run_eval(
         if case.category == "intent":
             r["scores"]["intent"] = intent_score(r["turns"], case.gold)
         if case.category == "article":
-            chk = article_identity_check(
-                r["turns"], case.gold.get("protected_names")
-            )
-            r["scores"]["identity_check"] = (
-                chk if chk is not None else {"skipped": "无保护名称标注"}
-            )
-            if case.gold.get("expect_articles") is not None:
+            article_turns = set()
+            exp = case.gold.get("expect_articles")
+            if exp is not None:
                 counts = [
                     len(extract_articles(t.get("content") or ""))
                     for t in r["turns"]
                 ]
                 # expect_articles：int → 核对最后一轮；list → 逐轮核对
                 # （null = 该轮是咨询等不要求交稿，不计）
-                exp = case.gold["expect_articles"]
                 if isinstance(exp, int):
                     checks = {len(counts) - 1: exp}
                 else:
                     checks = {
                         i: e for i, e in enumerate(exp) if e is not None
                     }
+                article_turns = {idx + 1 for idx, count in checks.items() if count > 0}
                 ok = bool(checks) and all(
                     i < len(counts) and counts[i] == e
                     for i, e in checks.items()
@@ -237,10 +265,10 @@ def run_eval(
                     "per_turn": counts,
                     "ok": ok,
                 }
-            if case.gold.get("should_refuse"):
-                r["scores"]["refusal_correct"] = article_refusal_correct(
-                    r["final_text"]
-                )
+            chk = article_identity_check(r["turns"], case.gold.get("protected_names"), article_turns)
+            r["scores"]["identity_check"] = (
+                chk if chk is not None else {"skipped": "无保护名称标注"}
+            )
         results.append(r)
 
     results_path = out_dir / "results.jsonl"

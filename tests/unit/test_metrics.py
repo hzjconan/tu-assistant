@@ -70,6 +70,9 @@ class TestBehaviorMetrics:
         assert not refusal_correct("可以回答，条款如下。", True)
         assert not refusal_correct("抱歉，我无法回答。", False)
         assert refusal_correct("可以回答，条款如下。", False)
+        assert refusal_correct("用人单位不在规定时间内支付工资的，应承担责任。", False)
+        assert refusal_correct("用人单位无法提供工资条。〔《劳动法》第五十条〕", False)
+        assert refusal_correct("提到第三条，但这个主题我无法回答。", True)
 
     def test_intent_within_three_turns(self):
         turns = [

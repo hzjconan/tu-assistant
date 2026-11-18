@@ -4,11 +4,15 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from tu_assistant.eval.metrics import (
     article_identity_check,
+    detect_refusal,
     extract_articles,
 )
 from tu_assistant.eval.runner import run_eval
+from tu_assistant.synth.refusal import REFUSAL_ANSWERS
 
 
 def _art(title, name="", tail=""):
@@ -162,7 +166,7 @@ def _mk_kb(path: Path):
         """
     )
     conn.execute(
-        "insert into legal_documents values ('dA','A法','','','','','','','')"
+        "insert into legal_documents values ('dA','A法','','','','','current','','')"
     )
     conn.execute(
         "insert into clauses values ('dA:a1:p1','dA',1,1,NULL,"
@@ -258,44 +262,6 @@ def test_run_eval_article_branch(tmp_path, monkeypatch):
     assert "SC-011" in report and "2/3" in report
 
 
-def test_run_eval_refusal_article(tmp_path, monkeypatch):
-    """库外主题拒答：无可评文章，refusal_correct=True。"""
-    kb = _mk_kb(tmp_path / "kb" / "kb-test.sqlite")
-    case = {
-        "case_id": "a2",
-        "category": "article",
-        "input": {"message": "写一篇内幕交易普法文章"},
-        "gold": {"should_refuse": True, "rubric": ["应拒答"]},
-        "source": "manual",
-    }
-    cases = _mk_cases(tmp_path / "cases.jsonl", [case])
-    replies = iter(["抱歉，这超出了我的知识范围。"])
-
-    class FakeClient:
-        def __init__(self, timeout=None):
-            pass
-
-        def post(self, url, json=None):
-            return _FakeResp(next(replies))
-
-    monkeypatch.setattr("httpx.Client", FakeClient)
-    out = run_eval(
-        cases_path=cases,
-        kb_path=kb,
-        endpoint="http://127.0.0.1:8080/v1",
-        allowed_hosts=["127.0.0.1"],
-        artifacts_dir=tmp_path / "artifacts",
-        exp_id="exp-x",
-    )
-    (r,) = [
-        json.loads(line)
-        for line in (Path(out["dir"]) / "results.jsonl").read_text().splitlines()
-    ]
-    ic = r["scores"]["identity_check"]
-    assert ic == {"skipped": "无保护名称标注"}
-    assert r["scores"]["refusal_correct"] is True
-
-
 def _run_eval_stub(tmp_path, monkeypatch, cases_rows, replies):
     """固定回复跑 run_eval，返回 (results, report_text)。"""
     kb = _mk_kb(tmp_path / "kb" / "kb-test.sqlite")
@@ -326,96 +292,146 @@ def _run_eval_stub(tmp_path, monkeypatch, cases_rows, replies):
     return results, report
 
 
-def test_refusal_article_false_when_delivered(tmp_path, monkeypatch):
-    """复审 P2：实际交付了文章，即使文中有拒答词（'不在'）也判失败。"""
-    case = {
-        "case_id": "a3",
-        "category": "article",
-        "input": {"message": "写一篇内幕交易普法文章"},
-        "gold": {"should_refuse": True, "rubric": ["应拒答"]},
-        "source": "manual",
-    }
-    article = _art("案例", name="", tail="，当事人不在现场")
-    results, _ = _run_eval_stub(tmp_path, monkeypatch, [case], [article])
-    assert results[0]["scores"]["refusal_correct"] is False
+def _published_article(case_id):
+    path = Path(__file__).resolve().parents[2] / "eval/cases/v1/articles.jsonl"
+    return next(c for c in map(json.loads, path.read_text().splitlines()) if c["case_id"] == case_id)
 
 
-def test_refusal_clarifying_question_not_refusal(tmp_path, monkeypatch):
-    """复审 R2：含弱词'不在'的追问不是拒答。"""
-    case = {
-        "case_id": "a3b",
-        "category": "article",
-        "input": {"message": "写一篇内幕交易普法文章"},
-        "gold": {"should_refuse": True, "rubric": ["应拒答"]},
-        "source": "manual",
-    }
-    results, _ = _run_eval_stub(
-        tmp_path, monkeypatch, [case], ["当事人不在现场吗？请补充具体情况。"]
+# 固定回复、结构门槛、证据短语
+REFUSAL_REPLIES = [
+    # A. 已交稿或正在追问
+    (_art("案例", tail="，当事人不在现场"), "article", None),
+    ("当事人不在现场吗？请补充具体情况。", "follow_up", None),
+    ("交易金额是否超出十万元？请补充具体情况。", "follow_up", None),
+    ("交易金额是否超出预算范围？请补充具体情况。", "follow_up", None),
+    ("这笔交易是否在授权范围外？请补充情况。", "follow_up", None),
+    ("我可以查知识库。交易金额是否超出十万元？请补充情况。", "follow_up", None),
+    ("信息不足时我无法生成准确的文章，请补充：\n1. 涉及哪个行业？", "follow_up", None),
+    ("信息不足时我无法生成准确的文章。\n1. 涉及哪个行业？", "follow_up", None),
+    # B. 无证据
+    ("该主题属于本知识库的收录范围。", None, None),
+    ("该主题未超出本知识库的收录范围。", None, None),
+    ("该主题没有超出本知识库的收录范围。", None, None),
+    ("该主题是否超出本知识库的收录范围？", None, None),
+    ("该主题是否有超出本知识库的收录范围？", None, None),
+    ("我可以查知识库，除了期货之外，您还想了解什么？", None, None),
+    ("如果超出本知识库的收录范围，我会直接告诉您。请问您想了解哪方面？", None, None),
+    ("这个主题超出知识库范围了吗？您能再说具体些吗？", None, None),
+    ("如果单位无法提供工资条，您手里还有其他证据吗？", None, None),
+    # C. 拒答，含引导转向其他主题的问句
+    ("本知识库缺乏相关依据，无法生成。", None, "无法生成"),
+    ("该主题超出本知识库的收录范围。", None, "超出本知识库"),
+    ("该主题在本知识库的收录范围之外。", None, "收录范围之外"),
+    ("这次不能写，原因是超出了本知识库的收录范围。", None, "不能写"),
+    ("原因是超出了本知识库的收录范围。", None, "超出了本知识库"),
+    ("抱歉，这超出了我的知识范围。", None, "超出了我的知识范围"),
+    (REFUSAL_ANSWERS["out_of_scope"], None, "超出了我的知识范围"),
+    (REFUSAL_ANSWERS["unsupported_feature"], None, "暂不支持"),
+    ("抱歉，证券期货内幕交易不属于我能处理的领域，这篇文章我写不了。", None, "写不了"),
+    ("现有资料里找不到证券期货方面的规定，这篇普法文章没法写。", None, "没法写"),
+    ("对不起，我只能就劳动和工会相关法律写文章，内幕交易罪这个题目我帮不上忙。", None, "帮不上忙"),
+    ("抱歉，库内没有证券期货方面的法律依据，无法生成这篇文章。需要我改写一篇劳动法方面的普法文章吗？",
+     None, "无法生成"),
+    ("抱歉，该主题超出本知识库的收录范围。您可以换个劳动法主题，例如：\n"
+     "1. 拖欠工资怎么维权？\n2. 加班费怎么算？", None, "超出本知识库"),
+    ("抱歉，库内没有证券期货方面的法律依据，无法生成。如有劳动法方面的需求，请补充说明。",
+     None, "库内没有"),
+]
+
+
+@pytest.mark.parametrize(("reply", "blocked_by", "evidence"), REFUSAL_REPLIES)
+def test_article_refusal(tmp_path, monkeypatch, reply, blocked_by, evidence):
+    results, report = _run_eval_stub(tmp_path, monkeypatch, [_published_article("article-007")], [reply])
+    scores = results[0]["scores"]
+    refused = evidence is not None
+    assert scores["refusal_correct"] is refused
+    assert scores["refusal_evidence"] == {"refused": refused, "evidence": evidence, "blocked_by": blocked_by}
+    assert scores["identity_check"] == {"skipped": "无保护名称标注"}
+    assert f"范围外正确拒答 {float(refused):.3f}（{int(refused)}/1）" in report
+    assert "范围内误拒 无样本（0/0）" in report
+    assert "常规题 无样本（0/0）" in report
+    assert "专设误拒题 无样本（0/0）" in report
+    assert "SC-008（自动初筛，依据见 results.jsonl 的 refusal_evidence）" in report
+
+
+@pytest.mark.parametrize(("reply", "expected"), [
+    pytest.param("这个主题不会超出知识库范围。", False,
+                 marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="不会超出被识别为越界")),
+    pytest.param("资料里找不到相关规定，这篇稿子恕难执笔。", True,
+                 marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="委婉拒答未命中短语")),
+    pytest.param("这个主题未必超出知识库范围，请补充具体情况。", False,
+                 marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="未必超出被识别为越界")),
+    pytest.param("现有资料里找不到证券期货方面的规定，没法据此写普法文章。", True,
+                 marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="插入据此后未命中短语")),
+    pytest.param("若干问题超出知识库范围，无法生成。", True,
+                 marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="若干被当作条件句前缀")),
+    pytest.param("用人单位无法提供考勤记录的，应承担不利后果（劳动合同法第三十条）。", False,
+                 marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="裸引用不阻断能力短语")),
+])
+def test_refusal_known_limitations(reply, expected):
+    assert detect_refusal(reply)["refused"] is expected
+
+
+@pytest.mark.parametrize(("reply", "blocked_by"), [
+    (_art("文章") + "\n该主题超出本知识库。请补充说明。", "article"),
+    ("该主题超出本知识库。〔《A法》第一条〕\n1. 需要劳动法主题吗？", "citation"),
+])
+def test_refusal_structure_priority(reply, blocked_by):
+    assert detect_refusal(reply) == {"refused": False, "evidence": None, "blocked_by": blocked_by}
+
+
+def test_consult_refusal_report(tmp_path, monkeypatch):
+    cases = [
+        {"case_id": str(i), "category": category, "gold": {"should_refuse": expected},
+         "input": {"message": "咨询"}, "source": "manual"}
+        for i, (category, expected) in enumerate([("refusal", True), ("false_refusal", False),
+                                                  ("false_refusal", False)])
+    ]
+    replies = ["无法回答。", "无法回答。", "单位无法提供凭证。〔《A法》第一条〕"]
+    results, report = _run_eval_stub(tmp_path, monkeypatch, cases, replies)
+    assert [r["scores"]["refusal_correct"] for r in results] == [True, False, True]
+    assert results[1]["scores"]["refusal_evidence"]["evidence"] == "无法回答"
+    assert results[2]["scores"]["refusal_evidence"]["blocked_by"] == "citation"
+    assert "范围外正确拒答 1.000（1/1）" in report
+    assert "范围内误拒 0.500（1/2）" in report
+    assert "常规题 无样本（0/0）" in report
+    assert "专设误拒题 1/2" in report
+
+
+def test_regular_refusal_report(tmp_path, monkeypatch):
+    cases = [
+        {"case_id": str(i), "category": category, "gold": {},
+         "input": {"message": "咨询或生成文章"}, "source": "manual"}
+        for i, category in enumerate(["clause_id", "clause_id", "article", "false_refusal"])
+    ]
+    replies = [
+        "单位无法提供凭证。〔《A法》第一条〕", "抱歉，这个问题我无法回答。",
+        _art("欠薪普法"), "抱歉，这个问题我无法回答。",
+    ]
+    results, report = _run_eval_stub(tmp_path, monkeypatch, cases, replies)
+    assert [r["scores"]["refusal_correct"] for r in results] == [True, False, True, False]
+    detections = [r["scores"]["refusal_evidence"] for r in results]
+    assert [d["blocked_by"] for d in detections] == ["citation", None, "article", None]
+    assert detections[1]["evidence"] == detections[3]["evidence"] == "无法回答"
+    assert "范围外正确拒答 无样本（0/0）" in report
+    assert "范围内误拒 0.500（2/4）" in report
+    assert "常规题 1/3" in report
+    assert "专设误拒题 1/1" in report
+
+
+def test_unparsed_article_leak(tmp_path, monkeypatch):
+    case = _published_article("article-009")
+    text = "\n---\n".join(
+        f"# {title}\n**案例**\n{name}发生欠薪。\n**以案说法**\n……\n**普法提示**\n……"
+        for title, name in [("其一", "甲厂"), ("其二", "栖梧样例厂"), ("其三", "乙厂")]
     )
-    assert results[0]["scores"]["refusal_correct"] is False
-
-
-def test_refusal_scope_statement_ok(tmp_path, monkeypatch):
-    """复审 R2：明确范围说明 + 无交付文章 → 拒答正确。"""
-    case = {
-        "case_id": "a3c",
-        "category": "article",
-        "input": {"message": "写一篇内幕交易普法文章"},
-        "gold": {"should_refuse": True, "rubric": ["应拒答"]},
-        "source": "manual",
-    }
-    for reply in ("本知识库缺乏相关依据，无法生成。",
-                  "该主题超出本知识库的收录范围。"):
-        results, _ = _run_eval_stub(
-            tmp_path / reply[:4], monkeypatch, [case], [reply]
-        )
-        assert results[0]["scores"]["refusal_correct"] is True, reply
-
-
-def test_refusal_amount_question_not_refusal(tmp_path, monkeypatch):
-    """复审 R3/R4：范围词脱离知识库覆盖语境 → 非拒答。"""
-    case = {
-        "case_id": "a3d",
-        "category": "article",
-        "input": {"message": "写一篇内幕交易普法文章"},
-        "gold": {"should_refuse": True, "rubric": ["应拒答"]},
-        "source": "manual",
-    }
-    for i, reply in enumerate((
-        "交易金额是否超出十万元？请补充具体情况。",
-        "交易金额是否超出预算范围？请补充具体情况。",
-        "这笔交易是否在授权范围外？请补充情况。",
-        "我可以查知识库。交易金额是否超出十万元？请补充情况。",
-    )):
-        results, _ = _run_eval_stub(
-            tmp_path / f"q{i}", monkeypatch, [case], [reply]
-        )
-        assert results[0]["scores"]["refusal_correct"] is False, reply
-
-
-def test_refusal_scope_relation(tmp_path, monkeypatch):
-    """复审 R5：同一句式只改变范围关系——越界才判拒答。"""
-    case = {
-        "case_id": "a3e",
-        "category": "article",
-        "input": {"message": "写一篇内幕交易普法文章"},
-        "gold": {"should_refuse": True, "rubric": ["应拒答"]},
-        "source": "manual",
-    }
-    for i, (reply, want) in enumerate((
-        ("该主题超出本知识库的收录范围。", True),
-        ("该主题在本知识库的收录范围之外。", True),
-        ("这次不能写，原因是超出了本知识库的收录范围。", True),
-        ("该主题属于本知识库的收录范围。", False),
-        ("该主题未超出本知识库的收录范围。", False),
-        ("该主题没有超出本知识库的收录范围。", False),
-        ("该主题是否有超出本知识库的收录范围？", False),
-        ("我可以查知识库，除了期货之外，您还想了解什么？", False),
-    )):
-        results, _ = _run_eval_stub(
-            tmp_path / f"s{i}", monkeypatch, [case], [reply]
-        )
-        assert results[0]["scores"]["refusal_correct"] is want, reply
+    results, report = _run_eval_stub(tmp_path, monkeypatch, [case], ["周岚提到欠薪。", text])
+    check = results[0]["scores"]["identity_check"]
+    assert check["total"] == check["passed"] == 0
+    assert check["reason"] == "未识别出文章结构"
+    assert check["unparsed_leaks"] == [{"turn": 2, "leaked": ["栖梧样例厂"]}]
+    assert "另有 1 轮未识别出文章结构但含保护名称" in report
+    assert results[0]["scores"]["article_count"]["ok"] is False
 
 
 def test_article_count_per_turn(tmp_path, monkeypatch):
