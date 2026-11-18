@@ -35,9 +35,16 @@ def add_turn(session: Session, turn: Turn) -> None:
     session.messages.append(turn)
 
 
-def to_openai_messages(session: Session, system_prompt: str) -> list[dict]:
-    """会话历史转 OpenAI messages（用户输入用原始文本，助手回复用交付文本）。"""
-    msgs = [{"role": "system", "content": system_prompt}]
+def to_openai_messages(session: Session, system_prompt: str | None) -> list[dict]:
+    """会话历史转 OpenAI messages（用户输入用原始文本，助手回复用交付文本）。
+
+    system_prompt 为 None 时不 prepend system 消息（对照实验用）。
+    """
+    msgs = (
+        [{"role": "system", "content": system_prompt}]
+        if system_prompt is not None
+        else []
+    )
     for t in session.messages:
         msgs.append({"role": t.role, "content": t.content})
     return msgs

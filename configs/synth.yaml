@@ -1,4 +1,9 @@
 # 离线数据合成配置：唯一允许调用外部大模型的模块（src/tu_assistant/synth/）
+
+# 构建数据集时给缺 system 消息的样本补运行时 system prompt
+# （max_questions 2–6 随机，修复 E001 诊断 1 的训练/推理分布不一致）
+add_system_prompt: true
+
 external_llm:
   base_url: "https://api.deepseek.com"
   model: "deepseek-chat"
@@ -13,15 +18,20 @@ rewrite_factor: 4
 # 若评测仍显示追问/拒答行为不稳，再继续增加。
 behavior:
   intent_samples: 240        # 三种变体均分（normal / skip / switch）
-  consult_single: 160        # 单违法行为
-  consult_multi: 80          # 多违法行为，每条样本用两个条款
+  consult_single: 600        # 单违法行为（E001：consult 样本不足，补量）
+  consult_multi: 300         # 多违法行为，每条样本用两个条款
   refusal_rewrites: 6        # 每个拒答模板的改写次数
 
 # 只在 train 侧重复行为类样本，valid 保持原始分布，避免同一多轮对话泄漏。
+# E001 尝试 4：4× → 2×（7B 一晚跑不完 4× 的 11.8k iter，2× 约 9.0k iter）
 train_oversample:
-  intent: 4
-  consult: 4
-  refusal: 4
+  intent: 2
+  consult: 2
+  refusal: 2
+
+# E001 尝试 4：knowledge 按条款覆盖抽稀到该上限（两轮：每条已覆盖条款
+# 先保 1 条，剩余随机补足），把 7B 单 epoch 压进一晚。
+knowledge_max: 6000
 
 # 通用对话样本混入比例，防止模型退化（research R4）
 general_ratio: 0.05

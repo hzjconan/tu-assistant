@@ -50,9 +50,13 @@ def process_turn(
     """处理一轮用户消息，返回助手 Turn（content 已校验）。"""
     add_turn(session, Turn(role="user", content=user_message))
 
-    system_prompt = build_system_prompt(
-        max_questions=session.config.get("max_questions_per_turn", 5),
-        default_article_count=session.config.get("default_article_count", 3),
+    system_prompt = (
+        build_system_prompt(
+            max_questions=session.config.get("max_questions_per_turn", 5),
+            default_article_count=session.config.get("default_article_count", 3),
+        )
+        if session.config.get("use_system_prompt", True)
+        else None
     )
     resp = client.chat(to_openai_messages(session, system_prompt),
                        temperature=temperature)

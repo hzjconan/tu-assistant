@@ -37,7 +37,7 @@ class ModelClient:
         self,
         endpoint: str,
         allowed_hosts: list[str],
-        model: str = "default",
+        model: str = "default_model",
         timeout_s: float = 300.0,
     ) -> None:
         check_endpoint_allowed(endpoint, allowed_hosts)

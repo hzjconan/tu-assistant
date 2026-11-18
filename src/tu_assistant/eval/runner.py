@@ -183,6 +183,15 @@ def run_eval(
         _render_report(run_id, exp_id, results), encoding="utf-8"
     )
 
+    # E002：从 current.json 记录本次服务的 exp 与基座模型，便于追溯测的是哪个 adapter
+    serve_info: dict = {}
+    cur = Path(artifacts_dir) / "serve" / "current.json"
+    if cur.exists():
+        try:
+            serve_info = json.loads(cur.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            serve_info = {}
+
     write_manifest(
         out_dir,
         artifact_id=run_id,
@@ -193,7 +202,13 @@ def run_eval(
             "exp_id": exp_id,
             "endpoint": endpoint,
         },
-        config={"temperature": 0.0, "model": model_name},
+        config={
+            "temperature": 0.0,
+            "model": model_name,
+            "use_system_prompt": cfg.use_system_prompt,
+            "exp": serve_info.get("exp", exp_id),
+            "base_model": serve_info.get("base_model"),
+        },
         extra={
             "case_count": len(cases),
             "gold_clause_issues": issues,

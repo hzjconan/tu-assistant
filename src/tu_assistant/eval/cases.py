@@ -22,7 +22,7 @@ CATEGORIES = {
     "clause_id", "multi_violation", "exception",
     "refusal", "false_refusal", "intent", "article",
 }
-SOURCES = {"public_case", "manual", "synthetic_reviewed"}
+SOURCES = {"public_case", "manual", "synthetic_reviewed", "train_probe"}
 
 
 @dataclass

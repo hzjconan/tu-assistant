@@ -21,6 +21,7 @@ class SessionConfig:
     max_questions_per_turn: int = 5
     default_article_count: int = 3
     max_article_count: int = 10
+    use_system_prompt: bool = True
 
 
 @dataclass
@@ -63,6 +64,7 @@ class TrainedAssistant:
                 "max_questions_per_turn": cfg.max_questions_per_turn,
                 "default_article_count": cfg.default_article_count,
                 "max_article_count": cfg.max_article_count,
+                "use_system_prompt": cfg.use_system_prompt,
             }
         )
         self._sessions[session.session_id] = session

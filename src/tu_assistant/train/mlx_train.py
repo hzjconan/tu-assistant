@@ -47,6 +47,7 @@ def run_training(config_path: str | Path, artifacts_dir: str | Path = "artifacts
         "iters": iters,
         "val_batches": cfg.get("val_batches", 25),
         "learning_rate": cfg.get("learning_rate", 1e-5),
+        "lr_schedule": cfg.get("lr_schedule"),
         "num_layers": lora.get("num_layers", 16),
         "lora_parameters": {
             "rank": lora.get("rank", 8),
@@ -55,16 +56,30 @@ def run_training(config_path: str | Path, artifacts_dir: str | Path = "artifacts
             "scale": lora.get("scale", 10.0),
         },
         "seed": cfg.get("seed", 42),
+        # E001 尝试 4 续训：从健康检查点恢复 adapter 权重（只载权重，
+        # 优化器状态/lr 调度从头开始）
+        "resume_adapter_file": cfg.get("resume_adapter_file"),
         "max_seq_length": cfg.get("max_seq_length", 2048),
+        "mask_prompt": cfg.get("mask_prompt", False),
         "grad_checkpoint": cfg.get("grad_checkpoint", True),
         "steps_per_report": cfg.get("steps_per_report", 50),
         "steps_per_eval": cfg.get("steps_per_eval", 200),
-        "save_every": cfg.get("save_every", max(1, iters)),
+        # E001 教训：原先缺省被设成 iters（覆盖 mlx_lm 自带默认），
+        # 中途中断就全损；未显式配置时用 500。
+        "save_every": cfg.get("save_every", 500),
     }
     mlx_cfg_path = exp_dir / "mlx_config.yaml"
     mlx_cfg_path.write_text(yaml.safe_dump(mlx_cfg), encoding="utf-8")
 
-    cmd = [sys.executable, "-m", "mlx_lm", "lora", "-c", str(mlx_cfg_path)]
+    # E001 尝试 4：走带补丁的入口（fp32 注意力 + NaN 守卫），
+    # 等价 `python -m mlx_lm lora -c ...`；serve/chat/eval 不受影响
+    cmd = [
+        sys.executable,
+        "-m",
+        "tu_assistant.train.patched_lora",
+        "-c",
+        str(mlx_cfg_path),
+    ]
 
     started = time.time()
     with log_path.open("w", encoding="utf-8") as log:
@@ -83,9 +98,13 @@ def run_training(config_path: str | Path, artifacts_dir: str | Path = "artifacts
             "iters": iters,
             "epochs": cfg.get("epochs"),
             "learning_rate": cfg.get("learning_rate"),
+            "lr_schedule": cfg.get("lr_schedule"),
             "lora": lora,
             "max_seq_length": cfg.get("max_seq_length"),
+            "mask_prompt": cfg.get("mask_prompt", False),
             "grad_checkpoint": cfg.get("grad_checkpoint", True),
+            "save_every": mlx_cfg["save_every"],
+            "resume_adapter_file": cfg.get("resume_adapter_file"),
         },
         seed=cfg.get("seed", 42),
         extra={

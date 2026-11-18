@@ -334,12 +334,13 @@ def serve_model(
         typer.secho(f"适配器不存在：{adapter}", fg="red")
         raise typer.Exit(1)
 
-    # mlx_lm.server 按请求里的 model 字段解析模型，记下本次服务的模型名
+    # mlx_lm.server 仅当请求的 model 字段为 "default_model" 时才挂 --adapter-path
+    # 指定的 adapter（E002）；写具体基座模型名会被路由到不带 adapter 的基座。
     serve_dir = Path(artifacts, "serve")
     serve_dir.mkdir(parents=True, exist_ok=True)
     (serve_dir / "current.json").write_text(
         _json.dumps(
-            {"model": base, "exp": exp,
+            {"model": "default_model", "base_model": base, "exp": exp,
              "endpoint": f"http://{host}:{port}/v1"},
             ensure_ascii=False,
         ),
@@ -493,7 +494,16 @@ def synth_sft(
         typer.echo(f"与评测集去重：剔除 {len(dropped)} 条")
 
     kept = balance_by_doc(kept, seed=cfg.get("seed", 42))
-    dataset_id = f"ds-{kb_path.stem}-{len(kept)}"
+    # knowledge 抽稀在 write_dataset 内执行（manifest 记真实前后值），
+    # 这里只估算抽稀后的总数用于 dataset_id。
+    knowledge_max = cfg.get("knowledge_max")
+    n_out = len(kept)
+    if knowledge_max:
+        n_know = sum(
+            1 for s in kept if s.get("meta", {}).get("type") == "knowledge"
+        )
+        n_out -= max(0, n_know - knowledge_max)
+    dataset_id = f"ds-{kb_path.stem}-{n_out}"
     generator = llm.meta() if llm else {"provider": "deterministic"}
     if reuse_dataset:
         generator["reuse_dataset"] = str(reuse_dataset)
@@ -511,6 +521,8 @@ def synth_sft(
         eval_set_version="v1",
         seed=cfg.get("seed", 42),
         train_oversample=cfg.get("train_oversample", {}),
+        add_system_prompt=cfg.get("add_system_prompt", False),
+        knowledge_max=knowledge_max,
     )
     typer.echo(f"数据集 {result['dataset_id']}：train {result['train']} / "
                f"valid {result['valid']}  分布 {result['counts']}")
@@ -667,10 +679,15 @@ def eval_run(
     cases: str = typer.Option(..., "--cases", help="评测集目录或 jsonl"),
     kb_version: str | None = typer.Option(None),
     exp: str | None = typer.Option(None, "--exp", help="实验 ID（记录用）"),
+    no_system_prompt: bool = typer.Option(
+        False, "--no-system-prompt",
+        help="评测时不发送 system prompt（对照实验用）",
+    ),
     config: str = typer.Option("configs/app.yaml"),
     artifacts: str = typer.Option("artifacts"),
 ) -> None:
     """运行评测（temperature=0，不调用外部服务）。"""
+    from .chat.assistant import SessionConfig
     from .config import get, load_app_config
     from .eval.runner import run_eval
 
@@ -688,6 +705,7 @@ def eval_run(
         model_name=_model_name(cfg, artifacts),
         artifacts_dir=artifacts,
         exp_id=exp,
+        session_config=SessionConfig(use_system_prompt=not no_system_prompt),
     )
     typer.echo(f"run_id={result['run_id']}  用例 {result['cases']} 条 → {result['dir']}")
     if result["gold_issues"]:

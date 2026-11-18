@@ -7,15 +7,23 @@ hardware: "M1 Pro / 32GB"
 data: "artifacts/datasets/latest"
 
 batch_size: 1
-epochs: 2
-learning_rate: 0.00001
+epochs: 1                     # E001 尝试 4：1 epoch ≈ 8.9k iter ≈ 9h（7B 实测 ~3.7 s/iter）
+learning_rate: 0.00005
+# E001：常数 5e-5 在 iter ~60-100 确定性发散为 NaN（已排除数据问题，
+# 50 个候选样本前向 loss 全部有限）。加 warmup+余弦退火：峰值仍为 5e-5。
+lr_schedule:
+  name: cosine_decay
+  arguments: [0.00005, 8921]    # [峰值 lr, decay_steps=iters]
+  warmup: 500                   # 前 500 iter 线性 0→5e-5
+save_every: 500                 # E001：曾默认=iters 导致中断全损，显式 500
 max_seq_length: 2048
 grad_checkpoint: true          # 长样本必须开（实测 23GB → 11.5GB）
+mask_prompt: true              # loss 只算最后一个 assistant 段（mlx_lm 0.32.2 支持）
 seed: 42
 
 lora:
   rank: 8
-  alpha: 16
+  alpha: 16                    # mlx_lm 实际使用 scale，此字段仅记录（不生效）
   scale: 10.0
   dropout: 0.0
-  num_layers: -1               # -1 = 全部线性层
+  num_layers: -1               # -1 = 全部线性层（约 20.19M 可训练参数）

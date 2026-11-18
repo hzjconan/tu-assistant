@@ -1,0 +1,35 @@
+# E001 尝试 4 续训：从 exp-20261115-124801 的 iter-500 检查点恢复
+# （fp32 注意力补丁 + NaN 守卫生效后）。与原 demo-7b.yaml 的差别：
+#   - resume_adapter_file：加载 0000500 权重（只载权重；mlx_lm 不恢复
+#     优化器状态和 iter 计数，iter 从 1 重新计）
+#   - iters = 8,921 - 500 = 8,421（剩余步数，见 E001"续训（修复后）"）
+#   - warmup 500 → 100（已是训练过的权重，只需短 warmup 让新 Adam 稳定）
+#   - lr_schedule decay_steps 对齐新 iters（8,421），峰值仍 5e-5
+exp_id: "exp-20261116-resume500"
+base_model: "mlx-community/Qwen2.5-7B-Instruct-4bit"
+base_license: "Apache-2.0"
+hardware: "M1 Pro / 32GB"
+
+data: "artifacts/datasets/latest"
+
+resume_adapter_file: "artifacts/train/exp-20261115-124801/adapters/0000500_adapters.safetensors"
+
+batch_size: 1
+iters: 8421
+learning_rate: 0.00005
+lr_schedule:
+  name: cosine_decay
+  arguments: [0.00005, 8421]    # [峰值 lr, decay_steps=iters]
+  warmup: 100                   # 续训短 warmup（优化器状态全新）
+save_every: 500
+max_seq_length: 2048
+grad_checkpoint: true          # 长样本必须开（实测 23GB → 11.5GB）
+mask_prompt: true              # loss 只算最后一个 assistant 段（mlx_lm 0.32.2 支持）
+seed: 42
+
+lora:
+  rank: 8
+  alpha: 16                    # mlx_lm 实际使用 scale，此字段仅记录（不生效）
+  scale: 10.0
+  dropout: 0.0
+  num_layers: -1               # -1 = 全部线性层（约 20.19M 可训练参数）
