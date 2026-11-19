@@ -67,7 +67,7 @@ description: "Task list for 001-legal-clause-assistant (POC)"
   - 2026-11-19 两批全部完成并导入 `kb-20261119-045641`（合计 67 条已确认：`liability_for` 26 + `references` 41；撤销旧错边共 10 条）。三份审阅源文件已归档至 `data/relation-reviews/`（旧基线 35 条 + 第一批 29 行 + 第二批 47 行），`relation_samples` 67/67 通过校验。[第二批执行单与对账记录](../../docs/handoffs/T019-relations-batch2-handoff.md)
 - [x] T077 修正责任关系的条、款定位并追溯影响。复现 T052 独立复审核实的 6 对错款，另核对 2 处整条引用的覆盖范围。对多款条文明确整条与第一款的编号、各自应配的原文和校验层解析口径，并核查历史样本；排查提取与确认逻辑，修正候选经 T019 用户审阅后写入新 KB 版本。核对知识类关系样本和 SC-005 的前后差异，保留历史数据集、run 与 KB 供比对。已训练 adapter 对这些关系的掌握情况需另行实测。[问题清单](../../docs/handoffs/T052-article-synthesis-handoff.md#84-不阻断-t052t057-扩量前须处理)
   - 2026-11-19 独立复审通过并完成收尾：从 `kb-20261113-093057` 派生 `kb-20261119-045641`（787 条多款条文第 1 款显式标 `第1款`，历史产物零改动），导入第一批 `liability_for` 审定差异（撤销 6 旧错边、新增 20，共 26 对可用且 `paragraph_mismatch=0`；审阅文件归档 `data/relation-reviews/`），落地口径 C 校验与 SC-005/编排去重，完成历史对账与 `exp-20261116-resume500` 24 探针实测。[执行单与复审记录](../../docs/handoffs/T077-relation-clause-handoff.md#6-独立复审2026-11-19)
-- [ ] T078 修复《上海市工伤保险实施办法》（63/63 条）括号条旨（如“（鉴定程序）”）被 `kb/parse.py` 误切为第 1 款导致款号整体顺延 +1 的问题；同步评估受影响的 5 道 `eval/cases/v1/reviewed.jsonl` 用例（含 SC-016 基线 `cand-039`）、历史基线兼容性与该文件条款关联（T019 第二批行 18–25 暂 `reject`）重抽。不阻塞当前 POC 演示，可留待正式阶段或另行排期（诊断见 `artifacts/logs/t019/p1_heading_diagnosis.md`）
+- [ ] T078 `[Post-POC / 正式阶段]` 修复《上海市工伤保险实施办法》（63/63 条）括号条旨（如“（鉴定程序）”）被 `kb/parse.py` 误切为第 1 款导致款号整体顺延 +1 的问题；同步评估受影响的 5 道 `eval/cases/v1/reviewed.jsonl` 用例（含 SC-016 基线 `cand-039`）、历史基线兼容性与该文件条款关联（T019 第二批行 18–25 暂 `reject`）重抽。2026-11-19 经用户确认移出 POC 范围，KB 与旧数据集保持不动以维持 v1/SC-016 基线，T057 清单与 T074 收尾文档登记已知缺陷、演示脚本避开该文件款号（诊断见 `artifacts/logs/t019/p1_heading_diagnosis.md`）
 
 ### 出处校验层（宪章原则 I）
 
@@ -149,7 +149,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 - [x] T052 [P] [US2] 实现普法文章样本合成 `src/tu_assistant/synth/articles.py`：主题 → 多篇文章（结构按 contracts/citation-format.md §4），场景在违法主体类型、当事人身份、手段、情节轻重上有差异；人物与单位一律虚构；含多违法行为综合场景（FR-024 ~ FR-029）
   - 2026-11-19 经用户确认完成。第二轮校订后的三条候选已通过结构、引用及训练长度复核。[最终校订记录](../../docs/handoffs/T052-article-synthesis-handoff.md#11-第二轮校订记录2026-11-19)
-- [ ] T053 [P] [US2] 实现修改请求样本合成（"语言再通俗一些""换一个违法主体"），加入 `src/tu_assistant/synth/articles.py`
+- [x] T053 [P] [US2] 实现修改请求样本合成（"语言再通俗一些""换一个违法主体"），加入 `src/tu_assistant/synth/articles.py`
+  - 2026-11-19 经内部 3 轮只读复审与第三方模型复审通过，用户确认完成。落地 `generate_revisions`（`plainer` / `swap_subject`）、`normalize_draft_markers`、运行时历史轮回填、三道 ≤2048 关卡、逐轮评测去重与 `actor_residual` 检查；整理 7 条新 KB 确认初稿（723–960 tok）与 12 条人工确认修改样本（1,314–1,804 tok，`parent` 12/12 可追溯），新增学习文档 `[L4.5.2]`。[执行单与复审记录](../../docs/handoffs/T053-article-revision-handoff.md)
 - [ ] T054 [P] [US2] 实现身份信息检查 `src/tu_assistant/chat/anonymize.py`：从本会话用户消息中按规则抽取候选身份信息（单位后缀"公司/厂/集团/医院/学校"、常见姓氏 + 名字），文章命中则替换为虚构名称并记录（FR-030）
 - [ ] T055 [P] [US2] 单元测试 `tests/unit/test_anonymize.py`：真实名称被替换、虚构名称不受影响
 - [ ] T056 [US2] 在 `src/tu_assistant/chat/orchestrator.py` 中接入文章数量（默认 3，上限 10，读取 `SessionConfig`）与身份信息检查（依赖 T054）

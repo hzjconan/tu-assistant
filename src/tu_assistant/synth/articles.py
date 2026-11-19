@@ -1,7 +1,9 @@
-"""T052：按已确认的条款关系合成一至三篇普法文章初稿。"""
+"""T052/T053：按已确认的条款关系合成普法文章初稿及多轮修改样本。"""
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import random
 import re
@@ -11,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..chat.orchestrator import DISCLAIMER, _related_clause_block
 from ..chat.prompts import build_system_prompt
 from ..citation.parse import RE_BARE_ARTICLE, parse_citations
 from ..citation.verify import verify_output
@@ -18,7 +21,7 @@ from ..config import load_yaml
 from ..eval.cases import eval_questions, load_cases
 from ..eval.metrics import extract_articles
 from ..kb.numbers import chinese_to_int
-from ..kb.store import all_clauses
+from ..kb.store import all_clauses, confirmed_relations_from
 from ..train.dataset import dedup_against_eval
 from .check import CheckStats, citation_issue
 from .knowledge import _canonical_text, _marker, doc_titles
@@ -26,7 +29,28 @@ from .llm import CompletionTruncatedError, ExternalLLM
 
 TRAIN_CONFIG = Path("configs/train/demo-7b-resume.yaml")
 ARTICLE_PROMPT_VERSION = "t052-v3.3"
+REVISION_PROMPT_VERSION = "t053-v1.1"
 COUNT_MODES = (None, 1, 2, 3)
+REVISION_TYPES = ("plainer", "swap_subject")
+MAX_DRAFT_TOKENS = 1050
+REVISION_USER_PROMPTS: dict[str, tuple[str, ...]] = {
+    "plainer": (
+        "语言再通俗一些，少用书面语。",
+        "写得更口语化点，方便发在工友群里看。",
+        "能不能把分析和提示改得更接地气些，案情和法条不用动？",
+        "这版有点太正式了，帮我改成大白话发宣传栏。",
+        "麻烦把措辞改得更浅显易懂一点，其他内容保持不变。",
+        "语气再亲切直白些，别像公文一样。",
+    ),
+    "swap_subject": (
+        "换一个违法主体重写一版，条款不变。",
+        "把涉事单位换成其他行业重新写一下。",
+        "这个案例背景太常见了，换个不同类型的主体和情节再出一版。",
+        "麻烦把里面的违法主体和工作场景都换掉，法条依据保持一样。",
+        "再帮我改一版，换个不同的单位和行业背景来讲这些规定。",
+        "违法主体换一家别的类型企业，具体情节也跟着调整一下。",
+    ),
+}
 SCENARIOS = (
     "一次事件当场被当事人发现。写清实施手段、当事人身份和直接影响。",
     "换一个工作场所和实施手段，通过事后发现的书面或电子记录还原事实。",
@@ -337,6 +361,298 @@ def generate(
             }
             _, duplicates = dedup_against_eval([sample], questions)
             if duplicates:
+                raise Rejected("eval_overlap")
+        except (Rejected, CompletionTruncatedError) as exc:
+            reason = exc.reason if isinstance(exc, Rejected) else "llm_truncated"
+            stats.record_drop(reason)
+            stats.drops.append(
+                {
+                    "request": idx + 1,
+                    "reason": reason,
+                    "article": getattr(exc, "article", None),
+                }
+            )
+            continue
+        stats.kept += 1
+        samples.append(sample)
+    return samples
+
+
+REVISION_INSTRUCTIONS = """根据用户的修改要求重写下面的普法文章初稿。只用提供的条款及对应关系。
+输出完整修改稿（不写“主题：”首行，无代码围栏、无附言、无免责声明）。
+保留与初稿相同的篇数和 Markdown 骨架：每篇以 # 标题 开头，篇间仅用单独一行 ---（单篇全文不要分隔线）。
+每篇按顺序写 ## 案例、## 以案说法、## 普法提示。人物、单位一律虚构。
+篇幅控制在初稿相近水平，不得大幅扩写：案例不超过150字，每项 ### 小节下的分析不超过80字，普法提示不超过80字。
+每项小标题保持“### <案中的实际主体>：<具体行为>”格式，下方依次写分析、
+**法律依据**和**法律责任**（各自单独一行），紧接原样复制下方素材中的标记行和 > 原文行。
+正文若再提条款须带完整标记，勿引入其他条款或原文未规定的处罚。"""
+
+REVISION_TYPE_RULES: dict[str, str] = {
+    "plainer": (
+        "修改要求（更通俗）：把叙述、分析和普法提示改得更口语化、接地气、便于普通职工看懂。"
+        "必须保持每篇的案情核心事实、时间/结果等关键要件、每个 ### 冒号左侧的实际责任主体、"
+        "责任归属结论以及法律依据/法律责任引用完全不变，只调整表达风格；每篇文本不能与初稿逐字照搬。"
+    ),
+    "swap_subject": (
+        "修改要求（换违法主体）：在条款允许的主体范围内，为每篇更换新的虚构违法主体"
+        "（不同行业、单位类型或身份）以及相配套的人物与具体情节，使每篇每个 ### 冒号左侧的责任主体"
+        "都与初稿不同；若条款义务固定落在特定主体（如住宿经营者、用人单位、人力资源服务机构），"
+        "则更换具体虚构机构、行业场景或实施手段，且不得脱离原条款规定的法定主体范围。"
+        "更换后的案情须完整交代责任主体及构成要件所需事实，保持法律依据与法律责任条款不变；"
+        "普法提示仍面向普通职工/工作人员，不要改成对经营者或单位喊话。"
+        "若无法合理更换，只返回“素材不适用”。"
+    ),
+}
+
+
+def draft_id(draft: dict) -> str:
+    """为初稿生成稳定标识，供 T053 meta.parent 与 T057 同侧划分追溯。"""
+    meta = draft.get("meta") or {}
+    for key in ("sample_id", "id"):
+        if meta.get(key):
+            return str(meta[key])
+    if meta.get("source_batch") and meta.get("request") is not None:
+        return f"{meta['source_batch']}:req{meta['request']}"
+    raw = json.dumps(draft.get("messages", []), ensure_ascii=False, sort_keys=True)
+    return "draft-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def normalize_draft_markers(draft: dict, kb_conn: sqlite3.Connection) -> dict:
+    """把初稿中的引用标记规范为当前 KB 的标准写法（如补齐多款条文的“第1款”）。
+
+    按 citation.span 从右往左切片替换，不改动正文叙述与引文内容，返回拷贝后的样本。
+    """
+    out = copy.deepcopy(draft)
+    messages = out.get("messages") or []
+    if not messages or messages[-1].get("role") != "assistant":
+        return out
+    text = messages[-1]["content"]
+    verified = verify_output(text, kb_conn)
+    by_id = {c.clause_id: c for c in all_clauses(kb_conn)}
+    titles = doc_titles(kb_conn)
+    edits: list[tuple[int, int, str]] = []
+    for cit in verified.citations:
+        if not cit.resolved_clause_id or cit.resolved_clause_id not in by_id:
+            continue
+        clause = by_id[cit.resolved_clause_id]
+        canonical = _marker(*titles[clause.doc_id], clause)
+        start, end = cit.span
+        if cit.raw != canonical and text[start:end] == cit.raw:
+            edits.append((start, end, canonical))
+    for start, end, repl in sorted(edits, key=lambda e: e[0], reverse=True):
+        text = text[:start] + repl + text[end:]
+    messages[-1]["content"] = text
+    return out
+
+
+def _history_assistant_text(draft_text: str, kb_conn: sqlite3.Connection) -> str:
+    """按运行时 process_turn 交付格式生成历史轮初稿文本（含关联补全与免责声明）。"""
+    verified = verify_output(draft_text, kb_conn)
+    text = verified.text
+    resolved = {c.resolved_clause_id for c in verified.citations if c.resolved_clause_id}
+    related = confirmed_relations_from(kb_conn, list(resolved))
+    extra = list(
+        dict.fromkeys(rel.to_clause_id for rel in related if rel.to_clause_id not in resolved)
+    )
+    if extra:
+        blocks = [b for cid in extra if (b := _related_clause_block(cid, kb_conn))]
+        if blocks:
+            text += "\n\n**相关条款（系统补充）**\n\n" + "\n\n".join(blocks)
+    if verified.citations:
+        text += DISCLAIMER
+    return text
+
+
+def _extract_article_actors(text: str) -> list[list[str]]:
+    chunks = re.split(r"(?m)^---[ \t]*$", text)
+    actors: list[list[str]] = []
+    for chunk in chunks:
+        actors.append(
+            [re.split("[：:]", h[4:], maxsplit=1)[0].strip() for h in ACT.findall(chunk)]
+        )
+    return actors
+
+
+def _eval_overlap_any_turn(sample: dict, questions: list[str]) -> bool:
+    if not questions:
+        return False
+    _, duplicates = dedup_against_eval([sample], questions)
+    if duplicates:
+        return True
+    for msg in sample.get("messages", []):
+        if msg.get("role") == "user":
+            _, turn_dups = dedup_against_eval([{"messages": [msg]}], questions)
+            if turn_dups:
+                return True
+    return False
+
+
+def _revision_prompt(
+    draft_text: str,
+    plan: list[list[Relation]],
+    revision_type: str,
+    user_request: str,
+) -> str:
+    materials = [
+        {
+            "篇": i,
+            "行为素材": [{"依据": r.basis_block, "责任": r.liability_block} for r in acts],
+        }
+        for i, acts in enumerate(plan, 1)
+    ]
+    separator = "单篇从标题写到提示结尾，全文不要分隔线。" if len(plan) == 1 else "只在两篇之间使用 ---。"
+    return (
+        f"{REVISION_INSTRUCTIONS}\n"
+        f"{REVISION_TYPE_RULES[revision_type]}\n"
+        f"本次交付 {len(plan)} 篇，{separator}\n"
+        f"用户修改要求：{user_request}\n"
+        f"逐篇素材\n{json.dumps(materials, ensure_ascii=False)}\n"
+        f"原初稿\n{draft_text}"
+    )
+
+
+def _validate_revision(
+    revised_text: str,
+    draft_text: str,
+    plan: list[list[Relation]],
+    revision_type: str,
+    kb_conn: sqlite3.Connection,
+) -> list[str]:
+    ids = _validate(revised_text, plan, kb_conn)
+    if revised_text.strip() == draft_text.strip():
+        raise Rejected("revision_unchanged")
+    rev_chunks = re.split(r"(?m)^---[ \t]*$", revised_text)
+    draft_chunks = re.split(r"(?m)^---[ \t]*$", draft_text)
+    for i, (rev_chunk, draft_chunk) in enumerate(zip(rev_chunks, draft_chunks, strict=True), 1):
+        if rev_chunk.strip() == draft_chunk.strip():
+            raise Rejected("revision_unchanged", i)
+    draft_actors = _extract_article_actors(draft_text)
+    rev_actors = _extract_article_actors(revised_text)
+    for i, (rev_chunk, d_acts, r_acts) in enumerate(
+        zip(rev_chunks, draft_actors, rev_actors, strict=True), 1
+    ):
+        if revision_type == "plainer" and r_acts != d_acts:
+            raise Rejected("actor_changed", i)
+        if revision_type == "swap_subject":
+            if any(r == d for d, r in zip(d_acts, r_acts, strict=True)):
+                raise Rejected("actor_unchanged", i)
+            if any((len(d) >= 3 or d.endswith("某")) and d in rev_chunk for d in d_acts):
+                raise Rejected("actor_residual", i)
+    return ids
+
+
+def generate_revisions(
+    kb_conn: sqlite3.Connection,
+    llm: ExternalLLM,
+    cfg: dict,
+    drafts: list[dict],
+    *,
+    revision_types: tuple[str, ...] = REVISION_TYPES,
+    n_requests: int | None = None,
+    stats: ArticleStats | None = None,
+    count_tokens: Callable[[list[dict]], int] | None = None,
+    train_config: Path = TRAIN_CONFIG,
+    eval_cases: Path = Path("eval/cases/v1"),
+    max_draft_tokens: int = MAX_DRAFT_TOKENS,
+    normalize_markers: bool = True,
+) -> list[dict]:
+    """T053：基于已通过人工复审的 1–2 篇初稿，合成多轮修改样本（plainer / swap_subject）。"""
+    if not revision_types or any(rt not in REVISION_TYPES for rt in revision_types):
+        raise ValueError(f"修改类型仅支持 {REVISION_TYPES}")
+    if n_requests is not None and n_requests < 0:
+        raise ValueError("n_requests 必须非负")
+    stats = stats if stats is not None else ArticleStats()
+    pool = _materials(kb_conn, stats)
+    rel_by_pair = {(r.basis, r.liability): r for r in pool}
+    total_requests = len(drafts) * len(revision_types) if n_requests is None else n_requests
+    if not drafts or not total_requests:
+        return []
+    train = load_yaml(train_config)
+    max_length = train["max_seq_length"]
+    questions = eval_questions(load_cases(eval_cases))
+    rng = random.Random(cfg.get("seed", 42))
+    count_tokens = count_tokens or training_token_counter(train["base_model"])
+
+    samples: list[dict] = []
+    for idx in range(total_requests):
+        raw_draft = drafts[(idx // len(revision_types)) % len(drafts)]
+        rtype = revision_types[idx % len(revision_types)]
+        stats.total += 1
+        try:
+            draft = normalize_draft_markers(raw_draft, kb_conn) if normalize_markers else raw_draft
+            d_msgs = draft.get("messages") or []
+            d_meta = draft.get("meta") or {}
+            if len(d_msgs) != 3 or [m.get("role") for m in d_msgs] != ["system", "user", "assistant"]:
+                raise Rejected("invalid_draft")
+            meta_plan = d_meta.get("plan") or []
+            if len(meta_plan) not in (1, 2):
+                raise Rejected("unsupported_article_count")
+            plan: list[list[Relation]] = []
+            for entry in meta_plan:
+                acts_rel = []
+                for pair in entry.get("acts") or []:
+                    rel = rel_by_pair.get((pair[0], pair[1]))
+                    if rel is None:
+                        raise Rejected("material_unresolved")
+                    acts_rel.append(rel)
+                if not acts_rel:
+                    raise Rejected("material_unresolved")
+                plan.append(acts_rel)
+
+            draft_text = d_msgs[2]["content"].strip()
+            draft_chunks = re.split(r"(?m)^---[ \t]*$", draft_text)
+            draft_actors = _extract_article_actors(draft_text)
+            if len(draft_chunks) != len(plan) or any(
+                len(a) != len(acts) for a, acts in zip(draft_actors, plan, strict=True)
+            ):
+                raise Rejected("invalid_draft")
+            history_assistant = _history_assistant_text(draft_text, kb_conn)
+            draft_turn_messages = [
+                d_msgs[0],
+                d_msgs[1],
+                {"role": "assistant", "content": history_assistant},
+            ]
+            if count_tokens(draft_turn_messages) > max_draft_tokens:
+                raise Rejected("draft_too_long")
+
+            user_rev = rng.choice(REVISION_USER_PROMPTS[rtype])
+            out = llm.chat(
+                [{"role": "user", "content": _revision_prompt(draft_text, plan, rtype, user_rev)}],
+                input_source="kb_clause",
+                max_tokens=4096,
+                reject_truncated=True,
+            )
+            if out.strip() == "素材不适用":
+                raise Rejected("scenario_unsuitable")
+            revised_text = out.strip()
+            ids = _validate_revision(revised_text, draft_text, plan, rtype, kb_conn)
+
+            messages = [
+                *draft_turn_messages,
+                {"role": "user", "content": user_rev},
+                {"role": "assistant", "content": revised_text},
+            ]
+            length = count_tokens(messages)
+            if length > max_length:
+                raise Rejected("too_long")
+
+            sample = {
+                "messages": messages,
+                "meta": {
+                    "type": "article",
+                    "kind": f"revise_{rtype}",
+                    "revision_type": rtype,
+                    "parent": draft_id(raw_draft),
+                    "doc_id": d_meta.get("doc_id") or plan[0][0].doc_id,
+                    "clause_ids": ids,
+                    "plan": meta_plan,
+                    "n_requested": len(plan),
+                    "max_questions": d_meta.get("max_questions"),
+                    "tokens": length,
+                    "request": idx + 1,
+                },
+            }
+            if _eval_overlap_any_turn(sample, questions):
                 raise Rejected("eval_overlap")
         except (Rejected, CompletionTruncatedError) as exc:
             reason = exc.reason if isinstance(exc, Rejected) else "llm_truncated"
