@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 
-from ..citation.verify import verify_output
+from ..citation.verify import VerifyResult, verify_output
 
 
 @dataclass
@@ -35,20 +35,29 @@ def check_sample(
     """检查一条合成样本的助手输出。返回是否保留。"""
     stats.total += 1
     result = verify_output(assistant_text, kb_conn)
-    s = result.stats
-    if s["not_found"]:
-        stats.record_drop("citation_not_found")
-        return False
-    if s["corrected"]:
-        # 原文写错的样本直接丢弃（训练数据应使用正确原文）
-        stats.record_drop("citation_text_wrong")
-        return False
-    cited_ids = {c.resolved_clause_id for c in result.citations if c.resolved_clause_id}
-    if require_citation and not cited_ids:
-        stats.record_drop("citation_missing")
-        return False
-    if expected_clause_ids and not expected_clause_ids <= cited_ids:
-        stats.record_drop("citation_mismatch")
+    reason = citation_issue(
+        result, require_citation=require_citation, expected_clause_ids=expected_clause_ids,
+    )
+    if reason:
+        stats.record_drop(reason)
         return False
     stats.kept += 1
     return True
+
+
+def citation_issue(
+    result: VerifyResult, *, require_citation: bool, expected_clause_ids: set[str] | None,
+) -> str | None:
+    """按合成流水线口径判定已解析的原稿，供整条样本及逐篇校验共用。"""
+    s = result.stats
+    if s["not_found"]:
+        return "citation_not_found"
+    if s["corrected"]:
+        # 原文写错的样本直接丢弃（训练数据应使用正确原文）
+        return "citation_text_wrong"
+    cited_ids = {c.resolved_clause_id for c in result.citations if c.resolved_clause_id}
+    if require_citation and not cited_ids:
+        return "citation_missing"
+    if expected_clause_ids and not expected_clause_ids <= cited_ids:
+        return "citation_mismatch"
+    return None

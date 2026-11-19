@@ -17,6 +17,10 @@ class ExternalInputNotAllowedError(RuntimeError):
     pass
 
 
+class CompletionTruncatedError(RuntimeError):
+    """本次输出达到了服务端长度上限。"""
+
+
 @dataclass
 class LLMUsage:
     calls: int = 0
@@ -57,6 +61,7 @@ class ExternalLLM:
         input_source: str,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        reject_truncated: bool = False,
     ) -> str:
         if input_source not in ALLOWED_INPUT_SOURCES:
             raise ExternalInputNotAllowedError(
@@ -74,6 +79,8 @@ class ExternalLLM:
         self.usage.calls += 1
         self.usage.prompt_tokens += getattr(u, "prompt_tokens", 0) or 0
         self.usage.completion_tokens += getattr(u, "completion_tokens", 0) or 0
+        if reject_truncated and resp.choices[0].finish_reason == "length":
+            raise CompletionTruncatedError("外部模型输出达到长度上限")
         return resp.choices[0].message.content or ""
 
     def meta(self) -> dict:

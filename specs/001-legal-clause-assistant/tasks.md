@@ -64,6 +64,7 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [x] T017 实现规则抽取条款关联 `src/tu_assistant/kb/relations.py`：识别"违反本法第X条""依照第X条"等显式引用，生成 `relations_pending.jsonl`（`origin=rule`，`confirmed=false`）
 - [x] T018 实现 `tu kb relations extract` / `tu kb relations confirm <file>`；"只有确认过的关联用于训练数据和关联补全指标"（data-model.md）
 - [ ] T019 用户人工确认关联关系：在 `artifacts/kb/relations_pending.jsonl` 中逐条标注 `confirmed`，用 `tu kb relations confirm` 导入（说明写在 `docs/relations-confirm-guide.md`）
+- [ ] T077 修正责任关系的条、款定位并追溯影响。复现 T052 独立复审核实的 6 对错款，另核对 2 处整条引用的覆盖范围。对多款条文明确整条与第一款的编号、各自应配的原文和校验层解析口径，并核查历史样本；排查提取与确认逻辑，修正候选经 T019 用户审阅后写入新 KB 版本。核对知识类关系样本和 SC-005 的前后差异，保留历史数据集、run 与 KB 供比对。已训练 adapter 对这些关系的掌握情况需另行实测。[问题清单](../../docs/handoffs/T052-article-synthesis-handoff.md#84-不阻断-t052t057-扩量前须处理)
 
 ### 出处校验层（宪章原则 I）
 
@@ -143,12 +144,14 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 **Independent Test**: 用评测集中的普法文章用例生成文章，由项目方按评分要点检查构成要件、出处、法律责任、多样性、语言风格（spec US2）
 
-- [ ] T052 [P] [US2] 实现普法文章样本合成 `src/tu_assistant/synth/articles.py`：主题 → 多篇文章（结构按 contracts/citation-format.md §4），场景在违法主体类型、当事人身份、手段、情节轻重上有差异；人物与单位一律虚构；含多违法行为综合场景（FR-024 ~ FR-029）
+- [x] T052 [P] [US2] 实现普法文章样本合成 `src/tu_assistant/synth/articles.py`：主题 → 多篇文章（结构按 contracts/citation-format.md §4），场景在违法主体类型、当事人身份、手段、情节轻重上有差异；人物与单位一律虚构；含多违法行为综合场景（FR-024 ~ FR-029）
+  - 2026-11-19 经用户确认完成。第二轮校订后的三条候选已通过结构、引用及训练长度复核。[最终校订记录](../../docs/handoffs/T052-article-synthesis-handoff.md#11-第二轮校订记录2026-11-19)
 - [ ] T053 [P] [US2] 实现修改请求样本合成（"语言再通俗一些""换一个违法主体"），加入 `src/tu_assistant/synth/articles.py`
 - [ ] T054 [P] [US2] 实现身份信息检查 `src/tu_assistant/chat/anonymize.py`：从本会话用户消息中按规则抽取候选身份信息（单位后缀"公司/厂/集团/医院/学校"、常见姓氏 + 名字），文章命中则替换为虚构名称并记录（FR-030）
 - [ ] T055 [P] [US2] 单元测试 `tests/unit/test_anonymize.py`：真实名称被替换、虚构名称不受影响
 - [ ] T056 [US2] 在 `src/tu_assistant/chat/orchestrator.py` 中接入文章数量（默认 3，上限 10，读取 `SessionConfig`）与身份信息检查（依赖 T054）
 - [ ] T057 [US2] 将 T052、T053 样本加入 `tu synth sft`，重新生成数据集
+  - 扩量前按[执行单的内容检查](../../docs/handoffs/T057-article-dataset-handoff.md)审阅可共场景的多违法素材、跨请求近重复和用户问法覆盖，并核对 T077 修正后的责任关系。
 - [x] T058 [US2] 编写评测集 v1 的普法文章用例约 10 题（含评分要点 `rubric`），加入 `eval/cases/v1/`，由用户审阅确认；实现 SC-011（身份信息）自动检查于 `src/tu_assistant/eval/metrics.py`
 - [ ] T059 [US2] 用 `configs/train/demo-7b.yaml` 训练演示模型（一到两晚），评测（quickstart V5）；按评测结果调整数据后再训一次
   - 进度：E001 尝试 4（方案 A）`exp-20261115-124801` 因 fp16 注意力反向溢出在 iter ~550 NaN；fp32 注意力 + NaN 守卫修复后从 iter-500 续训（`exp-20261116-resume500`，8,421 iter 零 NaN 完成，最终 val 0.472）；~~评测 `run-20261117-022645`：〔〕引用块 0/60、条款召回 0（与 iter-500 检查点逐字对比 42/60 相同）→ 路线验证未通过~~
