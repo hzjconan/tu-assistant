@@ -24,10 +24,13 @@ behavior:
 
 # 只在 train 侧重复行为类样本，valid 保持原始分布，避免同一多轮对话泄漏。
 # E001 尝试 4：4× → 2×（7B 一晚跑不完 4× 的 11.8k iter，2× 约 9.0k iter）
+# T057：去 system 对话体去重后唯一拒答 44 条，refusal 调至 4×（176 条，约占 train 1.96%），
+# 与 ds-8410 基线（192 条，~2.1%）保持一致，防止续训拒答退化。
 train_oversample:
   intent: 2
   consult: 2
-  refusal: 2
+  refusal: 4
+  article: 6
 
 # E001 尝试 4：knowledge 按条款覆盖抽稀到该上限（两轮：每条已覆盖条款
 # 先保 1 条，剩余随机补足），把 7B 单 epoch 压进一晚。
@@ -44,3 +47,13 @@ progress_every: 25
 prompt_version: "v1"
 
 seed: 42
+
+# 随数据集 manifest.json 一同落盘的已知限制（换 KB 或正式阶段修复后直接改此处）
+known_issues:
+  - id: "T078"
+    doc_id: "9fc301cd90566af9"
+    summary: "《上海市工伤保险实施办法》63/63 条括号条旨误切为第1款导致款号顺延+1；POC 保留历史口径维护 v1/SC-016 基线，正式阶段修复。"
+  - id: "history_related_supplement"
+    summary: "当前 KB 全部 26 对 liability_for 均无未引用出边，文章历史轮“相关条款（系统补充）”分支目前由单元测试覆盖。"
+  - id: "article_material_scope"
+    summary: "《劳动法》《劳动合同法》在新 KB 仅含 references（5/19 条）、无已确认 liability_for，POC 文章训练素材覆盖 6 部有责任关系的法规。"

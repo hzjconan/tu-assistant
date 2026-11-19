@@ -26,6 +26,29 @@ from ..manifest import write_manifest
 # 旧版/新版 SYSTEM_TEMPLATE 中追问上限的句式（"每轮最多提 N 个问题"）
 _MAX_QUESTIONS_RE = re.compile(r"最多提\s*(\d+)\s*个问题")
 
+# knowledge.relation_samples 的三条确定性问句模板（用于反推与刷新旧关系样本）
+_RELATION_QUESTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("relation_liability_for", re.compile(r"^违反《.+》.+要承担什么法律责任？$")),
+    ("relation_exception_of", re.compile(r"^《.+》.+有没有例外情形？$")),
+    ("relation_references", re.compile(r"^哪些条款引用了《.+》.+？$")),
+)
+
+
+def relation_kind_of(messages: list[dict]) -> str | None:
+    """按确定性问句正则识别关系类 knowledge 样本的 kind；不匹配返回 None。"""
+    user_msgs = [m.get("content", "").strip() for m in messages if m.get("role") == "user"]
+    if len(user_msgs) != 1:
+        return None
+    q = user_msgs[0]
+    for kind, pat in _RELATION_QUESTION_PATTERNS:
+        if pat.match(q):
+            return kind
+    return None
+
+
+def _is_article_text(text: str) -> bool:
+    return "以案说法" in text and "普法提示" in text
+
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", "", text)
@@ -34,7 +57,7 @@ def _norm(text: str) -> str:
 def dedup_against_eval(
     samples: list[dict], eval_questions: list[str], *, overlap: float = 0.8
 ) -> tuple[list[dict], list[dict]]:
-    """与评测集去重：任一 user 消息与评测题问句高重合 → 剔除。
+    """与评测集去重：整段拼接或任一单轮 user 消息与评测题问句高重合 → 剔除。
 
     用字符级 3-gram Jaccard 相似度，阈值 overlap。
     """
@@ -45,13 +68,16 @@ def dedup_against_eval(
     eval_grams = [grams(q) for q in eval_questions]
     kept, dropped = [], []
     for s in samples:
-        user_texts = " ".join(
-            m["content"] for m in s["messages"] if m["role"] == "user"
-        )
-        g = grams(user_texts)
-        dup = any(
-            eg and len(g & eg) / len(g | eg) >= overlap for eg in eval_grams
-        )
+        user_turns = [m["content"] for m in s["messages"] if m["role"] == "user"]
+        candidates = list(user_turns)
+        if len(user_turns) > 1:
+            candidates.append(" ".join(user_turns))
+        dup = False
+        for text in candidates:
+            g = grams(text)
+            if any(eg and len(g & eg) / len(g | eg) >= overlap for eg in eval_grams):
+                dup = True
+                break
         (dropped if dup else kept).append(s)
     return kept, dropped
 
@@ -98,37 +124,46 @@ def load_message_samples(dataset_dir: str | Path, kb_conn=None) -> list[dict]:
             if not line.strip():
                 continue
             messages = json.loads(line)["messages"]
-            # train.jsonl 含 train_oversample 的精确副本；复用时去重，
-            # 否则同一对话会被重复计数并可能泄漏进 valid。
-            key = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+            # train.jsonl 含 train_oversample 的精确副本，且部分旧样本仅 system 里的
+            # max_questions 不同；按去除 system 后的对话体去重（train 优先于 valid），
+            # 防止同一对话同时留在 train 与 valid 造成验证集污染。
+            body = [m for m in messages if m.get("role") != "system"]
+            key = json.dumps(body, ensure_ascii=False, sort_keys=True)
             if key in seen:
                 continue
             seen.add(key)
-            samples.append(
-                {"messages": messages,
-                 "meta": _infer_meta(messages, kb_conn)}
-            )
+            meta = _infer_meta(messages, kb_conn)
+            meta["split"] = split
+            samples.append({"messages": messages, "meta": meta})
     return samples
 
 
 def _infer_meta(messages: list[dict], kb_conn=None) -> dict:
-    assistant_text = next(
-        (m["content"] for m in reversed(messages) if m.get("role") == "assistant"),
-        "",
-    )
-    # 意图样本是 system + 多轮对话；写库时给单轮样本补的 system 只有 3 条消息，
-    # 用消息数区分，避免复用时把补过 system 的单轮样本误判为 intent。
+    assistants = [
+        m.get("content", "") for m in messages if m.get("role") == "assistant"
+    ]
+    assistant_text = assistants[-1] if assistants else ""
+    # 多轮样本（含 system 且消息数 > 3）：
+    # 仅当末轮与至少一条更早助手轮均含文章结构标记时判为 article（初稿→修改稿）；
+    # 其余（含“模糊开场→追问→中途改主意写文章”）保持 intent。
     if (
         messages
         and messages[0].get("role") == "system"
         and len(messages) > 3
     ):
-        sample_type = "intent"
+        if (
+            len(assistants) >= 2
+            and _is_article_text(assistants[-1])
+            and any(_is_article_text(a) for a in assistants[:-1])
+        ):
+            sample_type = "article"
+        else:
+            sample_type = "intent"
     elif "暂不支持" in assistant_text or "超出了我的知识范围" in assistant_text:
         sample_type = "refusal"
     elif "违法行为认定" in assistant_text:
         sample_type = "consult"
-    elif "以案说法" in assistant_text and "普法提示" in assistant_text:
+    elif _is_article_text(assistant_text):
         sample_type = "article"
     elif "〔" not in assistant_text:
         # 无任何引用标记：knowledge 样本必然带〔〕块（check 强制），
@@ -143,11 +178,16 @@ def _infer_meta(messages: list[dict], kb_conn=None) -> dict:
             c.resolved_clause_id for c in verify_output(assistant_text, kb_conn).citations
             if c.resolved_clause_id
         ]
-    return {
+    meta: dict[str, Any] = {
         "type": sample_type,
         "doc_id": clause_ids[0].split(":", 1)[0] if clause_ids else None,
         "clause_ids": clause_ids,
     }
+    if sample_type == "knowledge":
+        rel_kind = relation_kind_of(messages)
+        if rel_kind:
+            meta["kind"] = rel_kind
+    return meta
 
 
 def oversample_train(
@@ -165,29 +205,81 @@ def oversample_train(
     return out
 
 
+def _article_family_key(sample: dict) -> str:
+    from ..synth.articles import draft_id
+
+    meta = sample.get("meta") or {}
+    if meta.get("parent"):
+        return str(meta["parent"])
+    return draft_id(sample)
+
+
 def split_train_valid(
-    samples: list[dict], *, valid_ratio: float = 0.1, seed: int = 42
+    samples: list[dict],
+    *,
+    valid_ratio: float = 0.1,
+    seed: int = 42,
+    preserve_split: bool = True,
 ) -> tuple[list[dict], list[dict]]:
     rng = random.Random(seed)
-    idx = list(range(len(samples)))
-    rng.shuffle(idx)
-    n_valid = max(1, int(len(samples) * valid_ratio))
-    valid = [samples[i] for i in idx[:n_valid]]
-    train = [samples[i] for i in idx[n_valid:]]
-    return train, valid
+    locked_train: list[dict] = []
+    locked_valid: list[dict] = []
+    unlocked: list[dict] = []
+    for s in samples:
+        sp = (s.get("meta") or {}).get("split") if preserve_split else None
+        if sp == "train":
+            locked_train.append(s)
+        elif sp == "valid":
+            locked_valid.append(s)
+        else:
+            unlocked.append(s)
+
+    new_train: list[dict] = []
+    new_valid: list[dict] = []
+
+    unlocked_articles = [
+        s for s in unlocked if (s.get("meta") or {}).get("type") == "article"
+    ]
+    unlocked_others = [
+        s for s in unlocked if (s.get("meta") or {}).get("type") != "article"
+    ]
+
+    if unlocked_articles:
+        families: dict[str, list[dict]] = defaultdict(list)
+        for s in unlocked_articles:
+            families[_article_family_key(s)].append(s)
+        fam_keys = sorted(families)
+        rng.shuffle(fam_keys)
+        n_val_fam = (
+            max(1, int(len(fam_keys) * valid_ratio)) if len(fam_keys) >= 2 else 0
+        )
+        for k in fam_keys[:n_val_fam]:
+            new_valid.extend(families[k])
+        for k in fam_keys[n_val_fam:]:
+            new_train.extend(families[k])
+
+    if unlocked_others:
+        idx = list(range(len(unlocked_others)))
+        rng.shuffle(idx)
+        if len(unlocked_others) == 1 and (locked_valid or new_valid):
+            n_val = 0
+        else:
+            n_val = max(1, int(len(unlocked_others) * valid_ratio))
+        new_valid.extend(unlocked_others[i] for i in idx[:n_val])
+        new_train.extend(unlocked_others[i] for i in idx[n_val:])
+
+    return locked_train + new_train, locked_valid + new_valid
 
 
 def thin_knowledge(
     samples: list[dict], max_n: int, *, seed: int = 42
 ) -> tuple[list[dict], dict]:
-    """knowledge 样本按条款覆盖抽稀到 ``max_n``（E001 尝试 4）。
+    """knowledge 样本按条款覆盖抽稀到 ``max_n``（E001 尝试 4，T057 升级）。
 
-    第一轮：按主条款（``meta.clause_ids[0]``，meta 缺失时由
-    ``_infer_meta`` 在加载侧补齐）分组，每组保 1 条；再补上仅以从属
-    条款出现的 clause_id 的覆盖。第二轮：剩余名额在 leftover 中随机补足。
-    与 ``balance_by_doc`` 兼容（抽稀在其后执行，占比上限只会更低）。
-
-    返回 ``(抽稀后的 samples, 统计 dict)``；knowledge 不足 ``max_n`` 时原样返回。
+    - ``meta.kind`` 以 ``relation_`` 开头的关系样本钉住必保（pinned）；
+    - 第一轮保主条款与从属条款覆盖（优先选原 ``valid`` 样本以免丢失留出集）；
+    - 第二轮补足剩余名额时，优先保留 ``meta.split == "valid"`` 的旧留出样本，
+      裁减仅从非 ``valid`` 侧普通 knowledge 中扣除。
     """
     knowledge = [
         s for s in samples if s.get("meta", {}).get("type") == "knowledge"
@@ -195,10 +287,14 @@ def thin_knowledge(
     all_clauses = {
         c for s in knowledge for c in (s.get("meta", {}).get("clause_ids") or [])
     }
+    pinned = [
+        s for s in knowledge if str((s.get("meta") or {}).get("kind", "")).startswith("relation_")
+    ]
     stats = {
         "knowledge_max": max_n,
         "knowledge_before": len(knowledge),
         "clause_coverage_before": len(all_clauses),
+        "pinned_relations": len(pinned),
     }
     if len(knowledge) <= max_n:
         stats["knowledge_after"] = len(knowledge)
@@ -206,35 +302,53 @@ def thin_knowledge(
         return samples, stats
 
     rng = random.Random(seed)
+    kept: list[dict] = list(pinned)
+    kept_ids: set[int] = {id(s) for s in kept}
+
+    # 第一轮：按主条款分组，每组保 1 条（若尚未被 pinned 覆盖，优先保留 valid 样本）
     groups: dict[Any, list[dict]] = defaultdict(list)
     for i, s in enumerate(knowledge):
+        if id(s) in kept_ids:
+            continue
         cids = s.get("meta", {}).get("clause_ids") or []
-        # 无 clause_ids 的样本各占一组（保住它们）
         groups[cids[0] if cids else ("_no_clause_", i)].append(s)
 
-    kept: list[dict] = []
-    kept_ids: set[int] = set()
-    for g in groups.values():
-        rng.shuffle(g)
-        kept.append(g[0])
-        kept_ids.add(id(g[0]))
-
-    # 仅以从属条款出现的 clause_id 也要保覆盖
     covered = {
         c for s in kept for c in (s.get("meta", {}).get("clause_ids") or [])
     }
+    for key, g in groups.items():
+        if isinstance(key, str) and key in covered:
+            continue
+        rng.shuffle(g)
+        g.sort(key=lambda s: 0 if (s.get("meta") or {}).get("split") == "valid" else 1)
+        kept.append(g[0])
+        kept_ids.add(id(g[0]))
+        covered.update(g[0].get("meta", {}).get("clause_ids") or [])
+
+    # 仅以从属条款出现的 clause_id 也要保覆盖（跳过已覆盖条款与已入选样本，防重复追加）
     leftover = [s for s in knowledge if id(s) not in kept_ids]
     for cid in sorted(all_clauses - covered):
+        if cid in covered:
+            continue
         for s in leftover:
-            if cid in (s.get("meta", {}).get("clause_ids") or []):
+            if id(s) in kept_ids:
+                continue
+            cids = s.get("meta", {}).get("clause_ids") or []
+            if cid in cids:
                 kept.append(s)
                 kept_ids.add(id(s))
-                covered.add(cid)
+                covered.update(cids)
                 break
-    leftover = [s for s in leftover if id(s) not in kept_ids]
+    leftover = [s for s in knowledge if id(s) not in kept_ids]
 
-    rng.shuffle(leftover)
-    kept.extend(leftover[: max(0, max_n - len(kept))])
+    # 第二轮：优先保住原 valid 侧样本，再从非 valid 侧随机补足至 max_n
+    valid_left = [s for s in leftover if (s.get("meta") or {}).get("split") == "valid"]
+    other_left = [s for s in leftover if (s.get("meta") or {}).get("split") != "valid"]
+    rng.shuffle(valid_left)
+    rng.shuffle(other_left)
+    need = max(0, max_n - len(kept))
+    ordered_left = valid_left + other_left
+    kept.extend(ordered_left[:need])
 
     others = [
         s for s in samples if s.get("meta", {}).get("type") != "knowledge"
@@ -291,6 +405,8 @@ def write_dataset(
     train_oversample: dict[str, int] | None = None,
     add_system_prompt: bool = False,
     knowledge_max: int | None = None,
+    preserve_split: bool = True,
+    extra_manifest: dict[str, Any] | None = None,
 ) -> dict:
     """写 train.jsonl / valid.jsonl / manifest.json，返回汇总。"""
     out = Path(out_dir) / dataset_id
@@ -301,7 +417,9 @@ def write_dataset(
     prompt_stats = (
         unify_system_prompts(samples, seed=seed) if add_system_prompt else {}
     )
-    train, valid = split_train_valid(samples, seed=seed)
+    train, valid = split_train_valid(
+        samples, seed=seed, preserve_split=preserve_split
+    )
     base_train_size = len(train)
     train = oversample_train(train, train_oversample or {}, seed=seed)
 
@@ -312,10 +430,13 @@ def write_dataset(
 
     counts: dict[str, int] = defaultdict(int)
     train_counts: dict[str, int] = defaultdict(int)
+    valid_counts: dict[str, int] = defaultdict(int)
     for s in samples:
         counts[s.get("meta", {}).get("type", "unknown")] += 1
     for s in train:
         train_counts[s.get("meta", {}).get("type", "unknown")] += 1
+    for s in valid:
+        valid_counts[s.get("meta", {}).get("type", "unknown")] += 1
 
     write_manifest(
         out,
@@ -327,6 +448,7 @@ def write_dataset(
             "train_oversample": train_oversample or {},
             "add_system_prompt": add_system_prompt,
             "knowledge_max": knowledge_max,
+            "preserve_split": preserve_split,
         },
         seed=seed,
         extra={
@@ -337,10 +459,12 @@ def write_dataset(
             **({"knowledge_thin": thin_stats} if thin_stats else {}),
             "counts": dict(counts),
             "train_counts": dict(train_counts),
+            "valid_counts": dict(valid_counts),
             "base_train_size": base_train_size,
             "train_size": len(train),
             "valid_size": len(valid),
             "dedup_against": eval_set_version,
+            **(extra_manifest or {}),
         },
     )
 
@@ -354,4 +478,6 @@ def write_dataset(
         "train": len(train),
         "valid": len(valid),
         "counts": dict(counts),
+        "train_counts": dict(train_counts),
+        "valid_counts": dict(valid_counts),
     }

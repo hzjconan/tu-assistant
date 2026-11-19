@@ -483,7 +483,7 @@ def synth_sft(
     kb_version: str | None = typer.Option(None),
     artifacts: str = typer.Option("artifacts"),
     synth_config: str = typer.Option("configs/synth.yaml"),
-    eval_cases: str = typer.Option("eval/cases", help="评测集目录（去重用）"),
+    eval_cases: str = typer.Option("eval/cases/v1", help="评测集目录（去重用）"),
     skip_llm: bool = typer.Option(False, help="只用确定性样本（调试用）"),
     reuse_dataset: str | None = typer.Option(
         None, help="复用已有 train/valid 中的样本，只补新生成部分"
@@ -491,18 +491,30 @@ def synth_sft(
     reuse_only: bool = typer.Option(
         False, "--reuse-only", help="只重建数据集，不再生成任何新样本"
     ),
+    refresh_relations: bool = typer.Option(
+        False, "--refresh-relations", help="复用旧库时清理旧关系样本并注入当前 KB 全部确认关系"
+    ),
+    articles_file: list[str] | None = typer.Option(  # noqa: B008
+        None, "--articles-file", help="经人工复审固化的文章样本 JSONL（可重复传多次）"
+    ),
+    preserve_split: bool = typer.Option(
+        True, "--preserve-split/--no-preserve-split", help="复用旧数据集时保持原 train/valid 归属"
+    ),
 ) -> None:
     """生成 SFT 训练样本并构建数据集。"""
+    from collections import Counter
+
     from .config import load_synth_config
     from .eval.cases import eval_questions, load_cases
     from .kb.store import open_kb
-    from .synth import consult, dialogs, general, knowledge, refusal
+    from .synth import articles, consult, dialogs, general, knowledge, refusal
     from .synth.check import CheckStats, check_sample
     from .synth.llm import from_config
     from .train.dataset import (
         balance_by_doc,
         dedup_against_eval,
         load_message_samples,
+        relation_kind_of,
         write_dataset,
     )
 
@@ -518,12 +530,96 @@ def synth_sft(
     conn = open_kb(kb_path)
     cfg = load_synth_config(synth_config)
     llm = None if skip_llm else from_config(cfg)
+    titles = knowledge.doc_titles(conn)
 
     if reuse_dataset:
         samples = load_message_samples(reuse_dataset, conn)
         typer.echo(f"复用已有样本 {len(samples)} 条 → {reuse_dataset}")
     else:
         samples = knowledge.generate(conn, llm, cfg)
+
+    relation_refresh_stats: dict | None = None
+    if refresh_relations:
+        def _rel_sig(s: dict) -> tuple[str | None, tuple[str, ...]]:
+            rk = relation_kind_of(s.get("messages", []))
+            cids = tuple(sorted((s.get("meta") or {}).get("clause_ids") or []))
+            return rk, cids
+
+        old_train_rel_sigs = {
+            _rel_sig(s)
+            for s in samples
+            if (s.get("meta") or {}).get("split") == "train"
+            and relation_kind_of(s.get("messages", [])) is not None
+        }
+        before_rel = len(samples)
+        samples = [s for s in samples if relation_kind_of(s.get("messages", [])) is None]
+        removed_old = before_rel - len(samples)
+        new_rels = knowledge.relation_samples(conn, titles)
+        for rel_s in new_rels:
+            if _rel_sig(rel_s) in old_train_rel_sigs:
+                rel_s.setdefault("meta", {})["split"] = "train"
+        samples.extend(new_rels)
+        by_kind = Counter(s.get("meta", {}).get("kind", "unknown") for s in new_rels)
+        relation_refresh_stats = {
+            "removed_old": removed_old,
+            "added_new": len(new_rels),
+            "by_kind": dict(by_kind),
+        }
+        typer.echo(f"刷新条款关系样本：剔除旧关系 {removed_old} 条，注入新关系 {len(new_rels)} 条")
+
+    article_sources: list[str] = []
+    if articles_file:
+        if reuse_dataset:
+            old_art = sum(1 for s in samples if s.get("meta", {}).get("type") == "article")
+            if old_art:
+                samples = [s for s in samples if s.get("meta", {}).get("type") != "article"]
+                typer.echo(f"传入 --articles-file，已剔除复用库旧文章样本 {old_art} 条")
+        loaded_articles: list[dict] = []
+        for af in articles_file:
+            p = Path(af)
+            if not p.exists():
+                typer.secho(f"文章样本文件不存在：{p}", fg="red")
+                conn.close()
+                raise typer.Exit(1)
+            article_sources.append(str(p))
+            for line in p.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                meta = row.get("meta") or {}
+                if meta.get("type") != "article":
+                    typer.secho(f"{p} 中存在非 article 样本：{meta.get('type')}", fg="red")
+                    conn.close()
+                    raise typer.Exit(1)
+                loaded_articles.append(row)
+
+        draft_ids: set[str] = set()
+        normalized_articles: list[dict] = []
+        for row in loaded_articles:
+            meta = row.get("meta") or {}
+            if not meta.get("parent"):
+                did = articles.draft_id(row)
+                draft_ids.add(did)
+                norm = articles.normalize_draft_markers(row, conn)
+                norm.setdefault("meta", {})["sample_id"] = did
+                normalized_articles.append(norm)
+            else:
+                normalized_articles.append(row)
+        missing_parents = [
+            (r.get("meta") or {}).get("parent")
+            for r in normalized_articles
+            if (r.get("meta") or {}).get("parent")
+            and (r.get("meta") or {}).get("parent") not in draft_ids
+        ]
+        if missing_parents:
+            typer.secho(
+                f"检测到孤儿修改稿（parent 缺失对应初稿）：{missing_parents[:5]}", fg="red"
+            )
+            conn.close()
+            raise typer.Exit(1)
+        samples.extend(normalized_articles)
+        typer.echo(f"合入已审文章样本 {len(normalized_articles)} 条（来自 {len(article_sources)} 个文件）")
+
     if not reuse_only:
         if llm is not None:
             behavior = cfg.get("behavior", {})
@@ -542,19 +638,23 @@ def synth_sft(
 
     # 检查：引用可解析、条款存在、原文一致（assistant 输出部分）
     stats = CheckStats()
+    consult_drop_docs: Counter[str] = Counter()
     kept = []
     for s in samples:
         last = s["messages"][-1]
-        requires_citation = s.get("meta", {}).get("type") not in {
-            "refusal", "general",
-        }
+        meta = s.get("meta", {})
+        requires_citation = meta.get("type") not in {"refusal", "general"}
         if last["role"] == "assistant" and not check_sample(
             last["content"],
             conn,
             stats,
             require_citation=requires_citation,
-            expected_clause_ids=set(s.get("meta", {}).get("clause_ids", [])),
+            expected_clause_ids=set(meta.get("clause_ids", [])),
         ):
+            if meta.get("type") == "consult":
+                doc_id = meta.get("doc_id") or "unknown"
+                doc_name = titles[doc_id][0] if doc_id in titles else doc_id
+                consult_drop_docs[doc_name] += 1
             continue
         kept.append(s)
     conn.close()
@@ -563,11 +663,16 @@ def synth_sft(
     # 与评测集去重
     cases_dir = Path(eval_cases)
     questions = eval_questions(load_cases(cases_dir)) if cases_dir.exists() else []
+    if not questions:
+        typer.secho(f"警告：评测集路径 {cases_dir} 加载到 0 条问句，去重未生效", fg="yellow")
     kept, dropped = dedup_against_eval(kept, questions)
     if dropped:
-        typer.echo(f"与评测集去重：剔除 {len(dropped)} 条")
+        typer.echo(f"与评测集去重：剔除 {len(dropped)} 条（对照 {len(questions)} 条评测问句）")
 
+    art_before_bal = sum(1 for s in kept if s.get("meta", {}).get("type") == "article")
     kept = balance_by_doc(kept, seed=cfg.get("seed", 42))
+    art_after_bal = sum(1 for s in kept if s.get("meta", {}).get("type") == "article")
+
     # knowledge 抽稀在 write_dataset 内执行（manifest 记真实前后值），
     # 这里只估算抽稀后的总数用于 dataset_id。
     knowledge_max = cfg.get("knowledge_max")
@@ -588,16 +693,147 @@ def synth_sft(
             )
     if reuse_only:
         generator["mode"] = "reuse_only"
+
+    # 汇总 manifest 扩展信息（已知限制、关系刷新、淘汰 consult 分布、文章统计与去重留痕）
+    kept_articles = [s for s in kept if s.get("meta", {}).get("type") == "article"]
+    extra_manifest: dict = {
+        "known_issues": list(cfg.get("known_issues") or []),
+        "split_integrity": {
+            "preserved_from_reuse": bool(reuse_dataset and preserve_split),
+            "dedup_eval_cases_dir": str(cases_dir),
+            "dedup_eval_questions": len(questions),
+            "dedup_dropped": len(dropped),
+        },
+    }
+    if relation_refresh_stats is not None:
+        extra_manifest["relation_refresh"] = relation_refresh_stats
+    if consult_drop_docs:
+        extra_manifest["consult_check_drops"] = {
+            "total": sum(consult_drop_docs.values()),
+            "by_doc": dict(consult_drop_docs.most_common()),
+        }
+    if kept_articles:
+        kind_cnt = Counter((s.get("meta") or {}).get("kind", "unknown") for s in kept_articles)
+        doc_cnt = Counter(
+            titles[s["meta"]["doc_id"]][0]
+            if (s.get("meta") or {}).get("doc_id") in titles
+            else (s.get("meta") or {}).get("doc_id", "unknown")
+            for s in kept_articles
+        )
+        fam_ids = {
+            (s.get("meta") or {}).get("parent") or articles.draft_id(s)
+            for s in kept_articles
+        }
+        extra_manifest["article_stats"] = {
+            "total": len(kept_articles),
+            "drafts": sum(1 for s in kept_articles if not (s.get("meta") or {}).get("parent")),
+            "revisions": sum(1 for s in kept_articles if (s.get("meta") or {}).get("parent")),
+            "families": len(fam_ids),
+            "dropped_by_balance": art_before_bal - art_after_bal,
+            "by_kind": dict(kind_cnt),
+            "by_doc": dict(doc_cnt),
+            "sources": article_sources,
+        }
+
     result = write_dataset(
         kept, dataset_id, Path(artifacts, "datasets"),
         kb_version=kb_path.stem,
         generator=generator,
-        eval_set_version="v1",
+        eval_set_version="v1" if questions else None,
         seed=cfg.get("seed", 42),
         train_oversample=cfg.get("train_oversample", {}),
         add_system_prompt=cfg.get("add_system_prompt", False),
         knowledge_max=knowledge_max,
+        preserve_split=preserve_split,
+        extra_manifest=extra_manifest,
     )
+    # 落盘后核对：复算 unify_system_prompts 之后最终文章样本 token 分布，并核对 valid ∩ 旧 train = 0
+    if kept_articles or (reuse_dataset and preserve_split):
+        from statistics import median
+
+        from .config import load_yaml
+
+        out_dir = Path(result["dir"])
+        manifest_path = out_dir / "manifest.json"
+        mdata = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if reuse_dataset and preserve_split:
+            old_train_path = Path(reuse_dataset) / "train.jsonl"
+            new_valid_path = out_dir / "valid.jsonl"
+            if old_train_path.exists() and new_valid_path.exists():
+                def _no_sys_key(msgs: list[dict]) -> str:
+                    body = [m for m in msgs if m.get("role") != "system"]
+                    return json.dumps(body, ensure_ascii=False, sort_keys=True)
+
+                old_tr = {
+                    _no_sys_key(json.loads(line)["messages"])
+                    for line in old_train_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                }
+                new_va = [
+                    _no_sys_key(json.loads(line)["messages"])
+                    for line in new_valid_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                overlap_cnt = sum(1 for k in new_va if k in old_tr)
+                mdata.setdefault("split_integrity", {})["valid_overlap_with_reuse_train"] = overlap_cnt
+        if mdata.get("relation_refresh") and mdata.get("knowledge_thin"):
+            mdata["relation_refresh"]["kept_after_thin"] = mdata["knowledge_thin"].get(
+                "pinned_relations"
+            )
+        if kept_articles:
+            def _nosys(msgs: list[dict]) -> str:
+                return json.dumps(
+                    [m for m in msgs if m.get("role") != "system"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+
+            fam_by_nosys = {
+                _nosys(s["messages"]): (
+                    (s.get("meta") or {}).get("parent") or articles.draft_id(s)
+                )
+                for s in kept_articles
+            }
+            tr_fams = {
+                fam_by_nosys[k]
+                for line in (out_dir / "train.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip() and (k := _nosys(json.loads(line)["messages"])) in fam_by_nosys
+            }
+            va_fams = {
+                fam_by_nosys[k]
+                for line in (out_dir / "valid.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip() and (k := _nosys(json.loads(line)["messages"])) in fam_by_nosys
+            }
+            mdata.setdefault("article_stats", {}).update(
+                {
+                    "train_families": len(tr_fams),
+                    "valid_families": len(va_fams),
+                    "family_leakage": len(tr_fams & va_fams),
+                }
+            )
+            if articles.TRAIN_CONFIG.exists():
+                try:
+                    train_cfg = load_yaml(articles.TRAIN_CONFIG)
+                    counter = articles.training_token_counter(train_cfg["base_model"])
+                    sizes = [counter(s["messages"]) for s in kept_articles]
+                    max_seq = train_cfg["max_seq_length"]
+                    if max(sizes) > max_seq:
+                        typer.secho(
+                            f"错误：落盘文章样本最大长度 {max(sizes)} 超出 max_seq_length={max_seq}",
+                            fg="red",
+                        )
+                        raise typer.Exit(1)
+                    mdata["article_stats"]["token_lengths"] = {
+                        "min": min(sizes),
+                        "median": median(sizes),
+                        "max": max(sizes),
+                    }
+                except typer.Exit:
+                    raise
+                except Exception as exc:
+                    typer.secho(f"提示：跳过落盘 token 复算（{exc}）", fg="yellow")
+        manifest_path.write_text(json.dumps(mdata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     typer.echo(f"数据集 {result['dataset_id']}：train {result['train']} / "
                f"valid {result['valid']}  分布 {result['counts']}")
 

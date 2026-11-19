@@ -9,10 +9,14 @@ from tu_assistant.chat.orchestrator import DISCLAIMER
 from tu_assistant.kb.models import Clause, ClauseRelation, DocumentMeta
 from tu_assistant.kb.store import create_kb, insert_clause, insert_document, insert_relation
 from tu_assistant.synth.articles import (
+    ARTICLE_USER_PROMPTS,
+    CASE_USER_PROMPTS,
     REVISION_USER_PROMPTS,
     ArticleStats,
     draft_id,
+    find_case_near_duplicates,
     generate,
+    generate_from_case,
     generate_revisions,
     normalize_draft_markers,
 )
@@ -96,8 +100,9 @@ def test_request_modes_and_material_plan(inputs):
         assert len({p["focus"] for p in m["plan"]}) == len(plan)
         assert str(m["max_questions"]) in sample["messages"][0]["content"]
         assert 2 <= m["max_questions"] <= 6
+        cn_num = {1: "一", 2: "两", 3: "三", 4: "四"}
         assert (
-            (f"{mode}篇" in sample["messages"][1]["content"])
+            any(k in sample["messages"][1]["content"] for k in (f"{mode}篇", f"{cn_num[mode]}篇"))
             if mode
             else ("篇" not in sample["messages"][1]["content"])
         )
@@ -119,6 +124,7 @@ def test_request_modes_and_material_plan(inputs):
         ("actor", "actor_missing", 2),
         ("analysis", "analysis_missing", 2),
         ("bare", "citation_mismatch", 2),
+        ("tip_cit", "citation_in_tip", 2),
     ],
 )
 def test_bad_drafts_reject_whole_request(inputs, bad, reason, article):
@@ -137,6 +143,7 @@ def test_bad_drafts_reject_whole_request(inputs, bad, reason, article):
             "actor": ("### 虚构厂：", "### 违法主体："),
             "analysis": ("记录与该厂履职义务相符。", ""),
             "bare": ("请查收记录。", "根据第一条请查收记录。"),
+            "tip_cit": ("请查收记录。", f"请查收记录。\n**法律依据**\n{act['依据']}"),
         }
         old, new = replacements[bad]
         articles[1] = articles[1].replace(old, new)
@@ -237,7 +244,7 @@ def test_explicit_modes_and_no_multi_material(inputs):
     assert samples[0]["meta"]["n_requested"] == 1
     assert stats.materials == {"eligible": 1, "no_multi_pair": 1}
     with pytest.raises(ValueError, match="训练篇数"):
-        generate(conn, None, {}, request_modes=(4,), eval_cases=folder)
+        generate(conn, None, {}, request_modes=(5,), eval_cases=folder)
 
 
 def test_child_items_in_basis_quote(inputs):
@@ -644,3 +651,338 @@ def test_revision_user_prompts_do_not_overlap_v1_eval():
     ]
     _, dropped = dedup_against_eval(samples, questions)
     assert not dropped
+
+
+# ---- T057: 自然问法池、n4、n1_case 与跨请求案例近重复测试 ----
+
+
+def test_t057_n4_vague_modes_and_prompt_bank_no_eval_overlap(inputs):
+    from pathlib import Path
+
+    from tu_assistant.eval.cases import eval_questions, load_cases
+    from tu_assistant.train.dataset import dedup_against_eval
+
+    conn, folder = inputs
+    stats = ArticleStats()
+    samples = generate(
+        conn,
+        FixtureClient(lambda *_: None),
+        {"seed": 42},
+        n_requests=2,
+        request_modes=("vague", 4),
+        count_tokens=lambda _: 400,
+        eval_cases=folder,
+        stats=stats,
+    )
+    assert len(samples) == 2
+    assert samples[0]["meta"]["kind"] == "n3_vague"
+    assert samples[0]["meta"]["n_requested"] == 3
+    assert "几篇" in samples[0]["messages"][1]["content"]
+    assert samples[1]["meta"]["kind"] == "n4"
+    assert samples[1]["meta"]["n_requested"] == 4
+
+    v1 = Path("eval/cases/v1")
+    if v1.exists():
+        questions = eval_questions(load_cases(v1))
+        prompt_samples = [
+            {"messages": [{"role": "user", "content": tpl.format(topic="单位漏办手续")}]}
+            for group in ARTICLE_USER_PROMPTS.values()
+            for tpl in group
+        ] + [
+            {"messages": [{"role": "user", "content": tpl.format(case_brief="某机械厂一直没给工人办手续")}]}
+            for tpl in CASE_USER_PROMPTS
+        ]
+        _, dropped = dedup_against_eval(prompt_samples, questions)
+        assert not dropped
+
+
+def test_t057_generate_from_case_positive_and_negative(inputs):
+    conn, folder = inputs
+
+    class CaseClient:
+        def __init__(self, brief: str):
+            self.brief = brief
+
+        def chat(self, messages, *, input_source, max_tokens, reject_truncated):
+            assert (input_source, max_tokens, reject_truncated) == ("kb_clause", 4096, True)
+            mats = json.loads(messages[0]["content"].split("\n行为素材\n", 1)[1])
+            lines = ["# 漏办手续的后果", "## 案例", "某机械厂漏办了工人登记手续。", "## 以案说法"]
+            for m in mats:
+                lines.extend(
+                    [
+                        "### 某机械厂：漏办手续",
+                        "事实清楚，符合条款适用条件。",
+                        "**法律依据**",
+                        m["依据"],
+                        "**法律责任**",
+                        m["责任"],
+                    ]
+                )
+            lines.extend(["## 普法提示", "工友可留存凭证向主管部门反映。"])
+            return f"用户案情：{self.brief}\n" + "\n".join(lines)
+
+    ok_stats = ArticleStats()
+    ok = generate_from_case(
+        conn,
+        CaseClient("某机械厂一直不给车间工人办登记，大家准备去反映。"),
+        {"seed": 42},
+        n_requests=1,
+        stats=ok_stats,
+        count_tokens=lambda _: 500,
+        eval_cases=folder,
+    )
+    assert len(ok) == 1 and ok[0]["meta"]["kind"] == "n1_case"
+
+    for bad_brief in ("违反《演练规则》第一条的情况", "按第1条规定公司没办手续", ""):
+        bad_stats = ArticleStats()
+        bad = generate_from_case(
+            conn,
+            CaseClient(bad_brief),
+            {"seed": 42},
+            n_requests=1,
+            stats=bad_stats,
+            count_tokens=lambda _: 500,
+            eval_cases=folder,
+        )
+        assert not bad and bad_stats.reasons == {"invalid_case_brief": 1}
+
+
+def test_t057_find_case_near_duplicates():
+    # 1) 换标题、换人名、换单位名但情节高度相似 → 应检出
+    a = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": (
+                    "# 标题甲\n## 案例\n某快捷酒店前台赵某值班时发现男子用他人身份证为意识不清女子开房，"
+                    "经理钱某让只登记不报警。\n## 以案说法\n分析\n## 普法提示\n提示"
+                ),
+            }
+        ],
+        "meta": {"type": "article", "sample_id": "d1"},
+    }
+    b = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": (
+                    "# 标题乙\n## 案例\n某商务宾馆前台孙某值班时发现男子用他人身份证为意识不清女子开房，"
+                    "经理李某让只登记不报警。\n## 以案说法\n分析\n## 普法提示\n提示"
+                ),
+            }
+        ],
+        "meta": {"type": "article", "sample_id": "d2"},
+    }
+    # 2) 不同情节 → 不误报
+    c = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": (
+                    "# 标题丙\n## 案例\n某物流公司仓库管理员王某加班三个月未拿到加班费，"
+                    "向工会反映后公司仍拖延。\n## 以案说法\n分析\n## 普法提示\n提示"
+                ),
+            }
+        ],
+        "meta": {"type": "article", "sample_id": "d3"},
+    }
+    # 3) plainer 修改稿与其 parent → 自动跳过
+    p = {
+        "messages": [{"role": "assistant", "content": a["messages"][0]["content"]}],
+        "meta": {
+            "type": "article",
+            "kind": "revise_plainer",
+            "parent": "d1",
+            "source_batch": "rev",
+            "request": 1,
+        },
+    }
+    matches = find_case_near_duplicates([a, b, c, p])
+    pairs = {(m["left_id"], m["right_id"]) for m in matches}
+    assert ("d1", "d2") in pairs
+    assert ("d1", "rev:req1") not in pairs
+    assert ("d1", "d3") not in pairs and ("d2", "d3") not in pairs
+
+
+def test_t057_cli_synth_sft_rejects_orphan_revision_and_drops_old_articles(inputs, tmp_path):
+    from typer.testing import CliRunner
+
+    from tu_assistant.cli import app
+    from tu_assistant.kb.store import create_kb, insert_clause, insert_document, insert_relation
+
+    # 建临时磁盘 KB + 最小复用数据集 + 孤儿修改稿
+    artifacts_dir = tmp_path / "artifacts"
+    kb_dir = artifacts_dir / "kb"
+    kb_dir.mkdir(parents=True)
+    kb_file = kb_dir / "kb-test.sqlite"
+    db = create_kb(kb_file)
+    insert_document(db, DocumentMeta("演练规则", "示例版", doc_id="demo"))
+    insert_clause(db, Clause("demo", 1, 1, None, "第1条", text="应当登记。"))
+    insert_clause(db, Clause("demo", 3, 1, None, "第3条", text="登记遗漏责令改正。"))
+    insert_relation(db, ClauseRelation("demo:a1:p1", "demo:a3:p1", "liability_for", "manual", True))
+    db.commit()
+    db.close()
+
+    eval_dir = tmp_path / "eval_cases"
+    eval_dir.mkdir()
+
+    reuse_dir = artifacts_dir / "datasets" / "ds-old"
+    reuse_dir.mkdir(parents=True)
+    old_art_body = (
+        "## 案例\n旧文章\n## 以案说法\n分析\n"
+        "〔《演练规则》（示例版）第1条〕\n> 应当登记。\n## 普法提示\n提示"
+    )
+    old_rows = [
+        {
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "写文章"},
+                {"role": "assistant", "content": old_art_body},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "帮我润色一句话"},
+                {"role": "assistant", "content": "好的。"},
+            ]
+        },
+        *[
+            {
+                "messages": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": f"帮我润色第{i}句话"},
+                    {"role": "assistant", "content": f"好的第{i}句。"},
+                ]
+            }
+            for i in range(15)
+        ],
+    ]
+    (reuse_dir / "train.jsonl").write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in old_rows), encoding="utf-8"
+    )
+    (reuse_dir / "valid.jsonl").write_text("", encoding="utf-8")
+
+    orphan_file = tmp_path / "orphan.jsonl"
+    orphan_file.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "改通俗"},
+                    {"role": "assistant", "content": old_art_body},
+                ],
+                "meta": {"type": "article", "parent": "missing-draft"},
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "synth",
+            "sft",
+            "--kb-version",
+            "kb-test",
+            "--artifacts",
+            str(artifacts_dir),
+            "--reuse-dataset",
+            str(reuse_dir),
+            "--reuse-only",
+            "--skip-llm",
+            "--eval-cases",
+            str(eval_dir),
+            "--articles-file",
+            str(orphan_file),
+        ],
+    )
+    assert res.exit_code != 0
+    assert "孤儿修改稿" in res.output
+
+    # 正例路径：传入合法初稿 + 修改稿 + --refresh-relations，旧文章应被剔除，新文章与 manifest 完整落盘
+    new_draft_body = (
+        "# 新初稿\n## 案例\n全新初稿案情\n## 以案说法\n分析\n"
+        "〔《演练规则》（示例版）第1条〕\n> 应当登记。\n## 普法提示\n提示"
+    )
+    new_rev_body = (
+        "# 新修改稿\n## 案例\n全新修改稿案情\n## 以案说法\n通俗分析\n"
+        "〔《演练规则》（示例版）第1条〕\n> 应当登记。\n## 普法提示\n通俗提示"
+    )
+    valid_art_file = tmp_path / "valid_articles.jsonl"
+    valid_art_file.write_text(
+        "".join(
+            json.dumps(r, ensure_ascii=False) + "\n"
+            for r in (
+                {
+                    "messages": [
+                        {"role": "system", "content": "sys"},
+                        {"role": "user", "content": "写1篇新文章"},
+                        {"role": "assistant", "content": new_draft_body},
+                    ],
+                    "meta": {
+                        "type": "article",
+                        "kind": "n1",
+                        "sample_id": "d-new-1",
+                        "doc_id": "demo",
+                        "clause_ids": ["demo:a1:p1"],
+                    },
+                },
+                {
+                    "messages": [
+                        {"role": "system", "content": "sys"},
+                        {"role": "user", "content": "写1篇新文章"},
+                        {"role": "assistant", "content": new_draft_body + DISCLAIMER},
+                        {"role": "user", "content": "改通俗些"},
+                        {"role": "assistant", "content": new_rev_body},
+                    ],
+                    "meta": {
+                        "type": "article",
+                        "kind": "revise_plainer",
+                        "parent": "d-new-1",
+                        "doc_id": "demo",
+                        "clause_ids": ["demo:a1:p1"],
+                    },
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    res_ok = runner.invoke(
+        app,
+        [
+            "synth",
+            "sft",
+            "--kb-version",
+            "kb-test",
+            "--artifacts",
+            str(artifacts_dir),
+            "--reuse-dataset",
+            str(reuse_dir),
+            "--reuse-only",
+            "--refresh-relations",
+            "--skip-llm",
+            "--eval-cases",
+            str(eval_dir),
+            "--articles-file",
+            str(valid_art_file),
+        ],
+    )
+    assert res_ok.exit_code == 0, res_ok.output
+    latest_dir = (artifacts_dir / "datasets" / "latest").resolve()
+    all_text = (latest_dir / "train.jsonl").read_text(encoding="utf-8") + (
+        latest_dir / "valid.jsonl"
+    ).read_text(encoding="utf-8")
+    assert "旧文章" not in all_text
+    assert "全新初稿案情" in all_text and "全新修改稿案情" in all_text
+    manifest = json.loads((latest_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert len(manifest["known_issues"]) == 3
+    assert manifest["relation_refresh"]["added_new"] == 1
+    assert manifest["article_stats"]["total"] == 2
+    assert manifest["article_stats"]["family_leakage"] == 0
+    assert manifest["config"]["train_oversample"]["article"] == 6
+    assert "dedup_eval_questions" in manifest["split_integrity"]

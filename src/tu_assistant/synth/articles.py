@@ -11,6 +11,7 @@ import sqlite3
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from ..chat.orchestrator import DISCLAIMER, _related_clause_block
@@ -28,9 +29,42 @@ from .knowledge import _canonical_text, _marker, doc_titles
 from .llm import CompletionTruncatedError, ExternalLLM
 
 TRAIN_CONFIG = Path("configs/train/demo-7b-resume.yaml")
-ARTICLE_PROMPT_VERSION = "t052-v3.3"
+ARTICLE_PROMPT_VERSION = "t057-v4.0"
 REVISION_PROMPT_VERSION = "t053-v1.1"
-COUNT_MODES = (None, 1, 2, 3)
+COUNT_MODES = (None, 1, 2, 3, 4)
+ALL_REQUEST_MODES = (None, "vague", 1, 2, 3, 4)
+ARTICLE_USER_PROMPTS: dict[str, tuple[str, ...]] = {
+    "n1": (
+        "请围绕“{topic}”写1篇普法文章。",
+        "帮我写一篇关于“{topic}”的以案说法文章。",
+        "围绕“{topic}”出一篇给工友看的普法宣传稿。",
+    ),
+    "n2": (
+        "请围绕“{topic}”写2篇普法文章。",
+        "围绕“{topic}”写两篇以案说法的普法文章，场景要有区分。",
+    ),
+    "n3": (
+        "请围绕“{topic}”写3篇普法文章。",
+        "帮我写三篇讲“{topic}”的普法宣传文章。",
+    ),
+    "n3_default": (
+        "请围绕“{topic}”写普法文章。",
+        "帮我写一下关于“{topic}”的以案说法普法宣传文章。",
+    ),
+    "n3_vague": (
+        "帮我写几篇关于“{topic}”的普法宣传文章。",
+        "围绕“{topic}”写几篇以案说法文章，发给职工看。",
+    ),
+    "n4": (
+        "给我写4篇讲“{topic}”的以案说法文章，场景要有区分度。",
+        "请围绕“{topic}”写四篇普法宣传文章。",
+    ),
+}
+CASE_USER_PROMPTS: tuple[str, ...] = (
+    "写一篇普法文章：{case_brief}",
+    "帮我把这个事写成1篇以案说法：{case_brief}",
+    "请根据下面这个情况写一篇给职工看的普法文章：{case_brief}",
+)
 REVISION_TYPES = ("plainer", "swap_subject")
 MAX_DRAFT_TOKENS = 1050
 REVISION_USER_PROMPTS: dict[str, tuple[str, ...]] = {
@@ -55,6 +89,11 @@ SCENARIOS = (
     "一次事件当场被当事人发现。写清实施手段、当事人身份和直接影响。",
     "换一个工作场所和实施手段，通过事后发现的书面或电子记录还原事实。",
     "行为被提醒后以新的方式持续，影响扩大。交代纠正经过与责任成立的条件。",
+    "发生在中小型服务或物流企业，当事人向工会或主管部门反映后核查清楚。",
+    "发生在制造或加工车间，由班组长/部门负责人奉单位决定执行，交代决策与受益归属。",
+    "发生在民办机构或连锁门店，通过考勤表、工资条、聊天记录等电子凭证还原经过。",
+    "单位以内部规定或换个名义掩盖违法做法，经整改通知后仍未纠正。",
+    "涉及多名一线职工的共同遭遇，交代集体反映经过、书面留证与法定处理途径。",
 )
 NUM = r"[0-9零〇一二三四五六七八九十百千]+"
 PARAGRAPH_REF = re.compile(rf"第({NUM})条第({NUM})款")
@@ -70,6 +109,7 @@ INSTRUCTIONS = """编写给职工阅读的虚构普法文章初稿。只用提�
 案例不超过150字。每项小标题冒号左边填实际责任主体，右边填行为，例如“### 某厂：拒绝改正”。
 小标题下一行单独写一段不超过80字的分析，把本案事实与条款适用条件对应起来。
 案例先写清是谁作出决定、由谁执行、为谁办事，再按条款确定谁承担责任。
+若条款限定特定主体（如董事、监事、高级管理人员，或大众传播媒介、住宿经营者），须写明符合法定身份的主体。
 有返还争议时写清财物归属、谁控制或受益、向谁索还及对方的明确回应；
 只在案情和条款都支持时认定该责任。分析引用的事实都要在案例中交代。
 给职工的行动建议要区分“工作人员可以做什么”和“条款要求哪个主体履行义务”。
@@ -184,6 +224,8 @@ def _check_structure(article, acts, index, resolved):
         or not all(part.strip() for part in sections[2::2])
     ):
         raise Rejected("article_section_missing", index)
+    if LABEL.search(sections[6]):
+        raise Rejected("citation_in_tip", index)
     items = ACT.split(sections[4])
     if len(items) != len(acts) + 1:
         raise Rejected("violation_count_mismatch", index)
@@ -263,23 +305,27 @@ def generate(
     cfg: dict,
     *,
     n_requests: int = 12,
-    request_modes: tuple[int | None, ...] = COUNT_MODES,
+    request_modes: tuple[int | str | None, ...] = (None, 1, 2, 3),
     stats: ArticleStats | None = None,
     count_tokens: Callable[[list[dict]], int] | None = None,
     train_config: Path = TRAIN_CONFIG,
     eval_cases: Path = Path("eval/cases/v1"),
+    doc_ids: set[str] | None = None,
+    multi_whitelist: set[tuple[tuple[str, str], tuple[str, str]]] | None = None,
 ) -> list[dict]:
     """生成初稿。传入 stats 可取得材料与逐请求丢弃记录，测试可注入计数器。"""
     if n_requests < 0:
         raise ValueError("n_requests 必须非负")
-    if not request_modes or any(mode not in COUNT_MODES for mode in request_modes):
-        raise ValueError("训练篇数可选默认、1、2、3")
+    if not request_modes or any(mode not in ALL_REQUEST_MODES for mode in request_modes):
+        raise ValueError("训练篇数可选默认、vague、1、2、3、4")
     stats = stats if stats is not None else ArticleStats()
     train = load_yaml(train_config)
     max_length = train["max_seq_length"]
     questions = eval_questions(load_cases(eval_cases))
     rng = random.Random(cfg.get("seed", 42))
     pool = _materials(kb_conn, stats)
+    if doc_ids is not None:
+        pool = [r for r in pool if r.doc_id in doc_ids]
     rng.shuffle(pool)
     if not pool or not n_requests:
         return []
@@ -293,12 +339,22 @@ def generate(
         if first.doc_id == second.doc_id
         and first.basis != second.basis
         and first.liability != second.liability
+        and (
+            multi_whitelist is None
+            or ((first.basis, first.liability), (second.basis, second.liability)) in multi_whitelist
+            or ((second.basis, second.liability), (first.basis, first.liability)) in multi_whitelist
+        )
     ]
     samples = []
     multi_index = 0
     for idx in range(n_requests):
         mode = request_modes[idx % len(request_modes)]
-        n = mode or 3
+        if mode is None:
+            n, kind = 3, "n3_default"
+        elif mode == "vague":
+            n, kind = 3, "n3_vague"
+        else:
+            n, kind = int(mode), f"n{mode}"
         first = pool[idx % len(pool)]
         plan = [[first] for _ in range(n)]
         if mode == 1:
@@ -332,10 +388,10 @@ def generate(
                 raise Rejected("invalid_topic")
             text = text.strip()
             ids = _validate(text, plan, kb_conn)
-            count_hint = f"{mode}篇" if mode else ""
+            user_prompt = rng.choice(ARTICLE_USER_PROMPTS[kind]).format(topic=topic)
             messages = [
                 {"role": "system", "content": build_system_prompt(max_questions=q)},
-                {"role": "user", "content": f"请围绕“{topic}”写{count_hint}普法文章。"},
+                {"role": "user", "content": user_prompt},
                 {"role": "assistant", "content": text},
             ]
             length = count_tokens(messages)
@@ -349,7 +405,7 @@ def generate(
                 "messages": messages,
                 "meta": {
                     "type": "article",
-                    "kind": f"n{n}" if mode else "n3_default",
+                    "kind": kind,
                     "doc_id": plan[0][0].doc_id,
                     "clause_ids": ids,
                     "plan": meta_plan,
@@ -359,8 +415,7 @@ def generate(
                     "request": idx + 1,
                 },
             }
-            _, duplicates = dedup_against_eval([sample], questions)
-            if duplicates:
+            if _eval_overlap_any_turn(sample, questions):
                 raise Rejected("eval_overlap")
         except (Rejected, CompletionTruncatedError) as exc:
             reason = exc.reason if isinstance(exc, Rejected) else "llm_truncated"
@@ -668,3 +723,233 @@ def generate_revisions(
         stats.kept += 1
         samples.append(sample)
     return samples
+
+
+CASE_INSTRUCTIONS = """根据提供的依据与责任条款，构造“用户自带虚构案情、请求写成1篇普法文章”的样本。
+首行严格写“用户案情：<1至2句日常口语虚构纠纷，人物和单位一律虚构，不带法规名、书名号或条号>”。
+从第二行起给出对应的 1 篇完整普法文章（全文不要分隔线 ---），文章中的 ## 案例 须与首行案情事实一致，
+并在案例中补全条款适用所需的细节。按顺序写 # 标题、## 案例、## 以案说法、## 普法提示。
+案例不超过150字，每项 ### 小节分析不超过80字，普法提示不超过80字且面向普通职工。
+每项小标题用“### <实际责任主体>：<具体行为>”，下方依次写分析、**法律依据**和**法律责任**（各自单独一行），
+紧接原样复制下方素材中的标记行和 > 原文行。勿引入其他条款或原文未规定的处罚。
+仅输出首行用户案情及 Markdown 成稿，无代码围栏和附言。"""
+
+
+def generate_from_case(
+    kb_conn: sqlite3.Connection,
+    llm: ExternalLLM,
+    cfg: dict,
+    *,
+    n_requests: int = 4,
+    stats: ArticleStats | None = None,
+    count_tokens: Callable[[list[dict]], int] | None = None,
+    train_config: Path = TRAIN_CONFIG,
+    eval_cases: Path = Path("eval/cases/v1"),
+    doc_ids: set[str] | None = None,
+    multi_whitelist: set[tuple[tuple[str, str], tuple[str, str]]] | None = None,
+) -> list[dict]:
+    """T057：生成“用户自带虚构案情 → 1篇普法文章”样本（meta.kind='n1_case'）。"""
+    if n_requests < 0:
+        raise ValueError("n_requests 必须非负")
+    stats = stats if stats is not None else ArticleStats()
+    train = load_yaml(train_config)
+    max_length = train["max_seq_length"]
+    questions = eval_questions(load_cases(eval_cases))
+    rng = random.Random(cfg.get("seed", 42) + 101)
+    pool = _materials(kb_conn, stats)
+    if doc_ids is not None:
+        pool = [r for r in pool if r.doc_id in doc_ids]
+    rng.shuffle(pool)
+    if not pool or not n_requests:
+        return []
+    titles = [title for title, _ in doc_titles(kb_conn).values() if title]
+    count_tokens = count_tokens or training_token_counter(train["base_model"])
+    combos = [
+        (first, second)
+        for j, first in enumerate(pool)
+        for second in pool[j + 1 :]
+        if first.doc_id == second.doc_id
+        and first.basis != second.basis
+        and first.liability != second.liability
+        and (
+            multi_whitelist is None
+            or ((first.basis, first.liability), (second.basis, second.liability)) in multi_whitelist
+            or ((second.basis, second.liability), (first.basis, first.liability)) in multi_whitelist
+        )
+    ]
+
+    samples: list[dict] = []
+    for idx in range(n_requests):
+        # 奇数请求优先使用白名单双行为组合（对应 article-005/006），其余用单行为
+        acts = (
+            list(combos[(idx // 2) % len(combos)])
+            if combos and idx % 2 == 0
+            else [pool[idx % len(pool)]]
+        )
+        plan = [acts]
+        focus = rng.choice(SCENARIOS)
+        q = rng.randint(2, 6)
+        materials = [{"依据": r.basis_block, "责任": r.liability_block} for r in acts]
+        prompt = (
+            f"{CASE_INSTRUCTIONS}\n场景要求：{focus}\n行为素材\n"
+            + json.dumps(materials, ensure_ascii=False)
+        )
+        stats.total += 1
+        try:
+            out = llm.chat(
+                [{"role": "user", "content": prompt}],
+                input_source="kb_clause",
+                max_tokens=4096,
+                reject_truncated=True,
+            )
+            if out.strip() == "素材不适用":
+                raise Rejected("scenario_unsuitable")
+            lead, _, text = out.strip().partition("\n")
+            case_brief = lead.removeprefix("用户案情：").strip()
+            if (
+                not lead.startswith("用户案情：")
+                or not case_brief
+                or "《" in case_brief
+                or RE_BARE_ARTICLE.search(case_brief)
+                or any(title in case_brief for title in titles)
+            ):
+                raise Rejected("invalid_case_brief")
+            text = text.strip()
+            ids = _validate(text, plan, kb_conn)
+            user_prompt = rng.choice(CASE_USER_PROMPTS).format(case_brief=case_brief)
+            messages = [
+                {"role": "system", "content": build_system_prompt(max_questions=q)},
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": text},
+            ]
+            length = count_tokens(messages)
+            if length > max_length:
+                raise Rejected("too_long")
+            meta_plan = [{"focus": focus, "acts": [[r.basis, r.liability] for r in acts]}]
+            sample = {
+                "messages": messages,
+                "meta": {
+                    "type": "article",
+                    "kind": "n1_case",
+                    "doc_id": acts[0].doc_id,
+                    "clause_ids": ids,
+                    "plan": meta_plan,
+                    "n_requested": 1,
+                    "max_questions": q,
+                    "tokens": length,
+                    "request": idx + 1,
+                },
+            }
+            if _eval_overlap_any_turn(sample, questions):
+                raise Rejected("eval_overlap")
+        except (Rejected, CompletionTruncatedError) as exc:
+            reason = exc.reason if isinstance(exc, Rejected) else "llm_truncated"
+            stats.record_drop(reason)
+            stats.drops.append(
+                {
+                    "request": idx + 1,
+                    "reason": reason,
+                    "article": getattr(exc, "article", None),
+                }
+            )
+            continue
+        stats.kept += 1
+        samples.append(sample)
+    return samples
+
+
+_RE_PERSON = re.compile(r"[\u4e00-\u9fff]某")
+_RE_ORG = re.compile(
+    r"某[\u4e00-\u9fff]{1,6}"
+    r"(?:酒店|旅馆|宾馆|民宿|公司|工厂|厂|医院|学校|机构|中心|集团|养老院|幼儿园|商行|餐厅|餐馆)"
+)
+_RE_PUNCT_SPACE = re.compile(r"[\s，。、；：！？“”‘’（）()《》【】—\-·,.!?;:\"'`]+")
+
+
+def _normalize_case_text(case_text: str) -> str:
+    s = _RE_ORG.sub("<单位>", case_text)
+    s = _RE_PERSON.sub("<人>", s)
+    return _RE_PUNCT_SPACE.sub("", s)
+
+
+def _extract_title_and_cases(text: str) -> list[tuple[str, str]]:
+    chunks = re.split(r"(?m)^---[ \t]*$", text.strip())
+    out: list[tuple[str, str]] = []
+    for chunk in chunks:
+        sections = SECTIONS.split(chunk)
+        title = sections[0].strip().lstrip("#").strip() if sections else ""
+        case_text = ""
+        for name, body in zip(sections[1::2], sections[2::2], strict=False):
+            if name == "案例":
+                case_text = body.strip()
+                break
+        if title or case_text:
+            out.append((title, case_text))
+    return out
+
+
+def _char_bigrams(s: str) -> set[str]:
+    if len(s) < 2:
+        return {s} if s else set()
+    return {s[i : i + 2] for i in range(len(s) - 1)}
+
+
+def find_case_near_duplicates(
+    samples: list[dict],
+    *,
+    jaccard_threshold: float = 0.15,
+    seq_threshold: float = 0.35,
+) -> list[dict]:
+    """跨请求案例近重复检测：仅比对脱敏后的 ## 案例 段与标题，自动跳过 plainer 与其 parent。"""
+    entries: list[tuple[str, dict, list[tuple[str, str, set[str]]]]] = []
+    for s in samples:
+        msgs = s.get("messages") or []
+        ans = msgs[-1]["content"] if msgs and msgs[-1].get("role") == "assistant" else ""
+        meta = s.get("meta") or {}
+        if not meta.get("parent"):
+            sid = draft_id(s)
+        elif meta.get("request") is not None:
+            sid = f"{meta.get('source_batch', 'rev')}:req{meta['request']}"
+        else:
+            sid = draft_id(s)
+        arts = []
+        for title, case_text in _extract_title_and_cases(ans):
+            norm = _normalize_case_text(case_text)
+            arts.append((title, norm, _char_bigrams(norm)))
+        entries.append((sid, s, arts))
+
+    matches: list[dict] = []
+    for i in range(len(entries)):
+        sid_a, sa, arts_a = entries[i]
+        ma = sa.get("meta") or {}
+        id_a = draft_id(sa)
+        for j in range(i + 1, len(entries)):
+            sid_b, sb, arts_b = entries[j]
+            mb = sb.get("meta") or {}
+            id_b = draft_id(sb)
+            # 跳过 plainer 修改稿与其 parent 初稿的天然案情一致
+            if (ma.get("kind") == "revise_plainer" and ma.get("parent") == id_b) or (
+                mb.get("kind") == "revise_plainer" and mb.get("parent") == id_a
+            ):
+                continue
+            for ai, (ta, na, ga) in enumerate(arts_a, 1):
+                for bi, (tb, nb, gb) in enumerate(arts_b, 1):
+                    union = ga | gb
+                    jacc = (len(ga & gb) / len(union)) if union else 0.0
+                    seq = SequenceMatcher(None, na, nb).ratio() if (na and nb) else 0.0
+                    same_title = bool(ta and ta == tb)
+                    if jacc >= jaccard_threshold or seq >= seq_threshold or same_title:
+                        matches.append(
+                            {
+                                "left_id": sid_a,
+                                "right_id": sid_b,
+                                "left_article": ai,
+                                "right_article": bi,
+                                "left_title": ta,
+                                "right_title": tb,
+                                "jaccard": round(jacc, 4),
+                                "seq_ratio": round(seq, 4),
+                                "same_title": same_title,
+                            }
+                        )
+    return matches

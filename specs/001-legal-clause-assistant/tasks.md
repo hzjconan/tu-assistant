@@ -154,8 +154,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [ ] T054 [P] [US2] 实现身份信息检查 `src/tu_assistant/chat/anonymize.py`：从本会话用户消息中按规则抽取候选身份信息（单位后缀"公司/厂/集团/医院/学校"、常见姓氏 + 名字），文章命中则替换为虚构名称并记录（FR-030）
 - [ ] T055 [P] [US2] 单元测试 `tests/unit/test_anonymize.py`：真实名称被替换、虚构名称不受影响
 - [ ] T056 [US2] 在 `src/tu_assistant/chat/orchestrator.py` 中接入文章数量（默认 3，上限 10，读取 `SessionConfig`）与身份信息检查（依赖 T054）
-- [ ] T057 [US2] 将 T052、T053 样本加入 `tu synth sft`，重新生成数据集
-  - 扩量前按[执行单的内容检查](../../docs/handoffs/T057-article-dataset-handoff.md)审阅可共场景的多违法素材、跨请求近重复和用户问法覆盖，并核对 T077 修正后的责任关系。
+- [x] T057 [US2] 将 T052、T053 样本加入 `tu synth sft`，重新生成数据集
+  - 2026-11-20 经内部 2 轮独立只读复审与外部模型复审通过，用户确认完成。产出固化文章池 `artifacts/synth/articles/t057-curated/`（22 初稿 + 24 修改稿 = 46 条，22 家族，6 部法规均衡覆盖，token 520–1,804）与新数据集 `artifacts/datasets/ds-kb-20261119-045641-8247/`（`train 8,962` / `valid 820`，`article` 252 = 2.81%，`refusal` 176 = 1.96%，新 KB 67/67 关系全部保留，`valid ∩ ds-8410 train = 0`，家族零泄漏，74 条 v1 评测去重零重合，全库 max 2,015 ≤ 2,048 token），同步更新 `docs/learning/04-training-data.md`（`[L4.5.3]` / `L4.7`）与 `00-glossary.md`。[执行单与验收记录](../../docs/handoffs/T057-article-dataset-handoff.md)
 - [x] T058 [US2] 编写评测集 v1 的普法文章用例约 10 题（含评分要点 `rubric`），加入 `eval/cases/v1/`，由用户审阅确认；实现 SC-011（身份信息）自动检查于 `src/tu_assistant/eval/metrics.py`
 - [ ] T059 [US2] 用 `configs/train/demo-7b.yaml` 训练演示模型（一到两晚），评测（quickstart V5）；按评测结果调整数据后再训一次
   - 进度：E001 尝试 4（方案 A）`exp-20261115-124801` 因 fp16 注意力反向溢出在 iter ~550 NaN；fp32 注意力 + NaN 守卫修复后从 iter-500 续训（`exp-20261116-resume500`，8,421 iter 零 NaN 完成，最终 val 0.472）；~~评测 `run-20261117-022645`：〔〕引用块 0/60、条款召回 0（与 iter-500 检查点逐字对比 42/60 相同）→ 路线验证未通过~~
