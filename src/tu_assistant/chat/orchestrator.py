@@ -68,9 +68,11 @@ def process_turn(
     # 关联补全兜底（FR-019）：被引用条款的已确认关联若未被引用，追加提示
     resolved = {c.resolved_clause_id for c in verified.citations if c.resolved_clause_id}
     related = confirmed_relations_from(kb_conn, list(resolved))
-    extra = [
-        rel.to_clause_id for rel in related if rel.to_clause_id not in resolved
-    ]
+    extra = list(
+        dict.fromkeys(
+            rel.to_clause_id for rel in related if rel.to_clause_id not in resolved
+        )
+    )
     if extra:
         blocks = [_related_clause_block(cid, kb_conn) for cid in extra]
         blocks = [b for b in blocks if b]

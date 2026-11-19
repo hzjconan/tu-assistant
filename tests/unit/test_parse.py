@@ -88,3 +88,23 @@ class TestDuplicateDetection:
         clauses, warnings = parse_clauses(lines, "doc6")
         assert len([c for c in clauses if c.article_no == 1]) == 2
         assert not any("duplicate" in w for w in warnings)
+
+
+class TestMultiParagraphNumberText:
+    def test_multi_para_p1_and_items_get_explicit_paragraph_label(self):
+        lines = [
+            "第一条 单款内容。",
+            "第二条 单款含项：（一）甲；（二）乙。",
+            "第三条 多款第一款：（一）丙；（二）丁。",
+            "多款第二款内容。",
+        ]
+        clauses, warnings = parse_clauses(lines, "doc7")
+        assert not warnings
+        by_id = {c.clause_id: c.number_text for c in clauses}
+        assert by_id["doc7:a1:p1"] == "第一条"
+        assert by_id["doc7:a2:p1"] == "第二条"
+        assert by_id["doc7:a2:p1:i1"] == "第二条第一项"
+        assert by_id["doc7:a3:p1"] == "第三条第1款"
+        assert by_id["doc7:a3:p1:i1"] == "第三条第1款第一项"
+        assert by_id["doc7:a3:p1:i2"] == "第三条第1款第二项"
+        assert by_id["doc7:a3:p2"] == "第三条第2款"

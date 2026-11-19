@@ -51,3 +51,5 @@ class ClauseRelation:
     relation_type: str  # liability_for / references / exception_of
     origin: str = "rule"  # rule / llm / manual
     confirmed: bool = False
+    evidence: str = ""  # 仅写入 pending JSONL 辅助人工审阅，不改 SQLite 表结构
+    scope: str = ""  # explicit_paragraph / explicit_item / single_paragraph_article / whole_article_expanded

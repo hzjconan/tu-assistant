@@ -25,6 +25,22 @@ RE_SECTION_CN = re.compile(r"^([0-9零〇一二三四五六七八九十]+)、\s*
 
 _HEADING_ORDER = {"编": 0, "章": 1, "节": 2}
 _CN_NUM = "零一二三四五六七八九"
+_RE_ARTICLE_BASE = re.compile(r"^(第[0-9零〇一二三四五六七八九十百千]+条(?:之[一二三四五六七八九十]+)?)")
+
+
+def add_first_paragraph_label(number_text: str) -> str:
+    """为多款条文第一款（及其各项）补齐显式款号 ``第1款``。
+
+    例如 ``第十条`` → ``第十条第1款``，``第十条第一项`` → ``第十条第1款第一项``。
+    已含款号或不含``条``字（如通知类``第1段``）的编号保持不变。
+    """
+    if "款" in number_text:
+        return number_text
+    m = _RE_ARTICLE_BASE.match(number_text)
+    if not m:
+        return number_text
+    prefix = m.group(1)
+    return f"{prefix}第1款{number_text[len(prefix):]}"
 
 
 def parse_clauses(lines: list[str], doc_id: str) -> tuple[list[Clause], list[str]]:
@@ -104,6 +120,7 @@ def _parse_article_style(
     cur_number_text = ""
     cur_para_no = 0
     cur_para_lines: list[str] = []
+    cur_article_start = 0
     seen_articles: set[int] = set()
 
     def heading_titles() -> list[str]:
@@ -123,6 +140,17 @@ def _parse_article_style(
             )
         cur_para_lines = []
 
+    def finalize_article() -> None:
+        """一条结束后，若该条实际有 ≥2 款，把第一款及其子项标为``第X条第1款``。"""
+        if cur_article is None:
+            return
+        art_slice = clauses[cur_article_start:]
+        paras = {c.paragraph_no for c in art_slice if c.paragraph_no is not None}
+        if len(paras) >= 2:
+            for c in art_slice:
+                if c.paragraph_no == 1:
+                    c.number_text = add_first_paragraph_label(c.number_text)
+
     for line in lines:
         m = RE_HEADING.match(line)
         if m:
@@ -134,6 +162,7 @@ def _parse_article_style(
         m = RE_ARTICLE.match(line)
         if m:
             flush_para()
+            finalize_article()
             no = chinese_to_int(m.group(1))
             suffix = m.group(2) or ""
             if no is None:
@@ -145,6 +174,7 @@ def _parse_article_style(
             cur_article = no
             cur_number_text = f"第{m.group(1)}条{suffix}"
             cur_para_no = 1
+            cur_article_start = len(clauses)
             rest = m.group(3).strip()
             cur_para_lines = [rest] if rest else []
             continue
@@ -163,6 +193,7 @@ def _parse_article_style(
         cur_para_lines = [line]
 
     flush_para()
+    finalize_article()
     return clauses, warnings
 
 

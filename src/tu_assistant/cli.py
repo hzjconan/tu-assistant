@@ -48,6 +48,32 @@ def kb_import(
     typer.echo(f"校验报告：{result['report']}")
 
 
+@kb_app.command("derive")
+def kb_derive(
+    source_kb: str = typer.Argument(..., help="源知识库版本（如 kb-20261113-093057）或 sqlite 路径"),
+    kb_version: str | None = typer.Option(None, "--kb-version", help="派生后的新版本号，默认按时间戳生成"),
+    artifacts: str = typer.Option("artifacts", help="产物目录"),
+) -> None:
+    """从已有 SQLite 知识库派生新版本，补齐多款条文第一款显式款号（不改旧库）。"""
+    from .kb.derive import derive_kb
+
+    src = Path(source_kb)
+    if not src.exists():
+        src = Path(artifacts, "kb", f"{source_kb}.sqlite")
+    try:
+        res = derive_kb(src, artifacts, kb_version=kb_version)
+    except (FileNotFoundError, FileExistsError, ValueError, RuntimeError) as e:
+        typer.secho(f"派生失败：{e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(
+        f"kb_version={res['kb_version']}  derived_from={res['derived_from']}  "
+        f"文件 {res['files']} 篇 / 条款 {res['clauses']} 行 / "
+        f"更新多款条文 {res['multi_para_articles_updated']} 条（{res['number_text_rows_updated']} 行）"
+    )
+    typer.echo(f"新库：{res['sqlite']}  sha256={res['sqlite_sha256'][:16]}")
+    typer.echo(f"清单：{res['manifest']}")
+
+
 @kb_app.command("list")
 def kb_list(
     kb_version: str | None = typer.Option(None, help="知识库版本，默认最新"),
@@ -131,7 +157,12 @@ kb_app.add_typer(relations_app, name="relations")
 
 @relations_app.command("extract")
 def relations_extract(
-    kb_version: str | None = typer.Option(None),
+    kb_version: str | None = typer.Option(None, "--kb-version", help="知识库版本，默认最新"),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="输出 jsonl 路径（默认 artifacts/kb/<ver>-relations_pending.jsonl）",
+    ),
     artifacts: str = typer.Option("artifacts"),
 ) -> None:
     """用规则抽取条款关联候选，输出 relations_pending.jsonl 待人工确认。"""
@@ -154,8 +185,9 @@ def relations_extract(
     for _doc_id, group in groupby(clauses, key=lambda c: c.doc_id):
         pending.extend(extract_relations(list(group)))
 
-    out = Path(artifacts, "kb", f"{kb_path.stem}-relations_pending.jsonl")
-    with out.open("w", encoding="utf-8") as f:
+    out_path = Path(out) if out else Path(artifacts, "kb", f"{kb_path.stem}-relations_pending.jsonl")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as f:
         for r in pending:
             f.write(
                 _json.dumps(
@@ -164,68 +196,63 @@ def relations_extract(
                         "to_clause_id": r.to_clause_id,
                         "relation_type": r.relation_type,
                         "origin": r.origin,
+                        "decision": "pending",
                         "confirmed": False,
+                        "evidence": r.evidence,
+                        "scope": r.scope,
                     },
                     ensure_ascii=False,
                 )
                 + "\n"
             )
-    typer.echo(f"候选关联 {len(pending)} 条 → {out}")
-    typer.echo("请逐条把 confirmed 改为 true/false，然后运行 tu kb relations confirm")
+    typer.echo(f"候选关联 {len(pending)} 条 → {out_path}")
+    typer.echo(
+        f"请用 tu kb relations review {out_path} --kb-version {kb_path.stem} 核对，"
+        f"完成后运行 tu kb relations confirm {out_path} --kb-version {kb_path.stem}"
+    )
 
 
 @relations_app.command("confirm")
 def relations_confirm(
-    file: str = typer.Argument(..., help="人工确认后的 jsonl 文件"),
-    kb_version: str | None = typer.Option(None),
+    file: str = typer.Argument(..., help="人工审阅后的 jsonl 文件"),
+    kb_version: str = typer.Option(..., "--kb-version", help="目标新知识库版本（拒绝写入历史/只读版本）"),
+    batch: str | None = typer.Option(None, "--batch", help="批次标识（记录进 manifest）"),
     artifacts: str = typer.Option("artifacts"),
 ) -> None:
-    """导入人工确认的条款关联。"""
-    import json as _json
+    """事务化差异导入人工审阅后的条款关联（支持 confirm/revoke/reject/pending）。"""
+    from .kb.relations import RelationImportError, apply_relations_diff
 
-    from .kb.models import ClauseRelation
-    from .kb.store import insert_relation, open_kb
-
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
+    try:
+        res = apply_relations_diff(file, kb_version, artifacts, batch=batch)
+    except RelationImportError as e:
+        typer.secho(f"导入失败：{e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(
+        f"已导入 {res['kb_version']}：确认 {res['confirmed']} / "
+        f"撤销 {res['revoked']}（实际删除 {res['revoked_deleted']}） / "
+        f"拒绝 {res['rejected']} / 待查 {res['pending']}；"
+        f"库内已确认合计 {res['total_confirmed_after']} 条"
     )
-    conn = open_kb(kb_path)
-    n_confirmed = n_rejected = 0
-    with conn:
-        for line in Path(file).read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            d = _json.loads(line)
-            if d.get("confirmed"):
-                insert_relation(
-                    conn,
-                    ClauseRelation(
-                        d["from_clause_id"],
-                        d["to_clause_id"],
-                        d["relation_type"],
-                        d.get("origin", "manual"),
-                        confirmed=True,
-                    ),
-                )
-                n_confirmed += 1
-            else:
-                n_rejected += 1
-    conn.close()
-    typer.echo(f"已确认 {n_confirmed} 条关联入库；{n_rejected} 条被拒绝/未确认")
+    missed = res["revoked"] - res["revoked_deleted"]
+    if missed > 0:
+        typer.secho(
+            f"警告：有 {missed} 条 revoke 边在目标知识库中本就不存在（未删除任何行），"
+            "请确认是否为重复导入或失效旧边。",
+            fg="yellow",
+            err=True,
+        )
 
 
 @relations_app.command("review")
 def relations_review(
     file: str = typer.Argument(..., help="relations_pending.jsonl 路径"),
-    kb_version: str | None = typer.Option(None),
+    kb_version: str | None = typer.Option(None, "--kb-version", help="知识库版本，默认最新"),
     artifacts: str = typer.Option("artifacts"),
 ) -> None:
-    """交互式核对关联候选：输入行号查看 from/to 条款并标记 confirmed。"""
+    """交互式核对关联候选：查看完整原文（含子项）、所属条总款数与触发片段，标记四态决策。"""
     import json as _json
 
+    from .kb.relations import article_paragraph_count, canonical_clause_text
     from .kb.store import get_clause_by_id, get_document, open_kb
 
     path = Path(file)
@@ -234,6 +261,9 @@ def relations_review(
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    for row in rows:
+        if "decision" not in row:
+            row["decision"] = "confirm" if row.get("confirmed") else "pending"
 
     kb_path = (
         Path(artifacts, "kb", f"{kb_version}.sqlite")
@@ -250,22 +280,51 @@ def relations_review(
 
     def show(idx: int) -> None:
         r = rows[idx]
+        in_db = bool(
+            conn.execute(
+                "SELECT 1 FROM clause_relations "
+                "WHERE from_clause_id=? AND to_clause_id=? AND relation_type=? AND confirmed=1",
+                (r["from_clause_id"], r["to_clause_id"], r["relation_type"]),
+            ).fetchone()
+        )
+        db_tag = "库内已有旧边" if in_db else "库内未入库"
+        extra_meta = [db_tag]
+        if r.get("scope"):
+            extra_meta.append(f"scope={r['scope']}")
+        if r.get("evidence"):
+            extra_meta.append(f"触发={r['evidence']}")
+        meta_s = "，" + "，".join(extra_meta)
         typer.echo(
             f"\n[{idx + 1}/{len(rows)}] {r['relation_type']}"
-            f"（origin={r.get('origin')}，当前 confirmed={r['confirmed']}）"
+            f"（origin={r.get('origin')}，当前 decision={r['decision']}{meta_s}）"
         )
+        if r.get("suggested_decision") or r.get("note"):
+            typer.echo(
+                f"  提示: 建议={r.get('suggested_decision') or '-'} | {r.get('note') or ''}"
+            )
+        if r.get("llm_verdict") or r.get("llm_reason"):
+            typer.echo(
+                f"  预审: {r.get('llm_verdict') or '-'} | {r.get('llm_reason') or ''}"
+            )
         for label, key in (("from", "from_clause_id"), ("to", "to_clause_id")):
             c = get_clause_by_id(conn, r[key])
             doc = get_document(conn, c.doc_id) if c else None
             if c and doc:
-                typer.echo(f"  {label}: {doc.title}（{doc.version_label or '无版本'}）{c.number_text}")
-                typer.echo(f"        {c.text}")
+                para_note = ""
+                if label == "from":
+                    total_p = article_paragraph_count(conn, c)
+                    para_note = f" [该条共 {total_p} 款，当前第 {c.paragraph_no or 1} 款]"
+                typer.echo(
+                    f"  {label}: {doc.title}（{doc.version_label or '无版本'}）"
+                    f"{c.number_text}{para_note}  ({c.clause_id})"
+                )
+                typer.echo(f"        {canonical_clause_text(conn, c)}")
             else:
                 typer.echo(f"  {label}: {r[key]}（未在库中找到）")
 
     typer.echo(
-        f"共 {len(rows)} 条。用法：行号=查看并标记；行号 t/f=直接标记；q=退出。"
-        "标记时回车=true，n=false，s=跳过"
+        f"共 {len(rows)} 条。用法：行号=查看并标记；行号 y/n/p/r=直接标记；q=退出。"
+        "标记时回车/y=confirm，n=reject，p/s=pending（待查），r=revoke（撤销旧边）"
     )
     while True:
         try:
@@ -289,22 +348,36 @@ def relations_review(
         verdict = parts[1] if len(parts) > 1 else None
         if verdict is None:
             try:
-                verdict = input("confirmed? [Y/n/s] ").strip().lower()
+                verdict = input("decision? [Y(confirm)/n(reject)/p(pending)/r(revoke)] ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 break
-        if verdict in ("", "y", "t", "true", "1"):
+        if verdict in ("", "y", "t", "true", "1", "c", "confirm"):
+            rows[idx]["decision"] = "confirm"
             rows[idx]["confirmed"] = True
-        elif verdict in ("n", "f", "false", "0"):
+        elif verdict in ("n", "f", "false", "0", "reject"):
+            rows[idx]["decision"] = "reject"
+            rows[idx]["confirmed"] = False
+        elif verdict in ("r", "revoke"):
+            rows[idx]["decision"] = "revoke"
+            rows[idx]["confirmed"] = False
+        elif verdict in ("p", "s", "skip", "pending"):
+            rows[idx]["decision"] = "pending"
             rows[idx]["confirmed"] = False
         else:
-            typer.echo("已跳过，未修改")
+            typer.echo("未识别的输入，未修改")
             continue
         save()
-        done = sum(1 for r in rows if r["confirmed"])
-        typer.echo(f"→ confirmed={rows[idx]['confirmed']}（累计 true {done}/{len(rows)}）")
+        done = sum(1 for r in rows if r.get("decision") == "confirm")
+        rev = sum(1 for r in rows if r.get("decision") == "revoke")
+        typer.echo(
+            f"→ decision={rows[idx]['decision']}（累计 confirm {done} / revoke {rev} / 共 {len(rows)}）"
+        )
 
     conn.close()
-    typer.echo(f"\n已保存 {path}。全部核完后运行：uv run tu kb relations confirm {path}")
+    typer.echo(
+        f"\n已保存 {path}。全部核完后运行："
+        f"uv run tu kb relations confirm {path} --kb-version {kb_path.stem}"
+    )
 
 
 serve_app = typer.Typer(help="模型服务")

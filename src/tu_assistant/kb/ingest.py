@@ -182,6 +182,7 @@ def import_directory(
         inputs={"file_count": len(files), "sqlite": str(kb_path)},
         config={},
         extra={
+            "writable": True,
             "clause_count": total_clauses,
             "issue_count": sum(len(r["issues"]) for r in report_rows),
         },

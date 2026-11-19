@@ -118,33 +118,37 @@ def relation_samples(
     kb_conn: sqlite3.Connection,
     titles: dict[str, tuple[str, str]],
 ) -> list[dict]:
-    """条款关系样本：只用 confirmed 关联。"""
-    from ..kb.store import get_clause_by_id
+    """条款关系样本：只用 confirmed 关联，原文按完整规范文本（含子项）输出。"""
+    clauses = all_clauses(kb_conn)
+    by_id = {c.clause_id: c for c in clauses}
 
     rows = kb_conn.execute(
         "SELECT from_clause_id, to_clause_id, relation_type FROM clause_relations "
-        "WHERE confirmed=1"
+        "WHERE confirmed=1 ORDER BY relation_type, from_clause_id, to_clause_id"
     ).fetchall()
     samples = []
     for from_id, to_id, rel_type in rows:
-        a = get_clause_by_id(kb_conn, from_id)
-        b = get_clause_by_id(kb_conn, to_id)
+        a = by_id.get(from_id)
+        b = by_id.get(to_id)
         if a is None or b is None:
             continue
         ta, va = titles[a.doc_id]
         tb, vb = titles[b.doc_id]
+        a_text = _canonical_text(a, clauses)
+        b_text = _canonical_text(b, clauses)
         if rel_type == "liability_for":
             q = f"违反《{ta}》{a.number_text}要承担什么法律责任？"
             ans = (
-                f"违反该条款的法律责任见：\n{_marker(tb, vb, b)}\n> {b.text}\n\n"
-                f"被违反的条款：\n{_marker(ta, va, a)}\n> {a.text}"
+                f"违反该条款的法律责任见：\n{_marker(tb, vb, b)}\n> {b_text}\n\n"
+                f"被违反的条款：\n{_marker(ta, va, a)}\n> {a_text}"
             )
         elif rel_type == "exception_of":
             q = f"《{ta}》{a.number_text}有没有例外情形？"
-            ans = f"存在例外规定：\n{_marker(tb, vb, b)}\n> {b.text}"
+            ans = f"存在例外规定：\n{_marker(tb, vb, b)}\n> {b_text}"
         else:
             q = f"哪些条款引用了《{ta}》{a.number_text}？"
-            ans = f"以下条款涉及该条款：\n{_marker(tb, vb, b)}\n> {b.text}"
+            ans = f"以下条款涉及该条款：\n{_marker(tb, vb, b)}\n> {b_text}"
+        cited_ids = [a.clause_id, b.clause_id] if rel_type == "liability_for" else [b.clause_id]
         samples.append(
             {
                 "messages": [
@@ -152,7 +156,7 @@ def relation_samples(
                     {"role": "assistant", "content": ans},
                 ],
                 "meta": {"type": "knowledge", "kind": f"relation_{rel_type}",
-                         "doc_id": a.doc_id, "clause_ids": [a.clause_id, b.clause_id]},
+                         "doc_id": a.doc_id, "clause_ids": cited_ids},
             }
         )
     return samples

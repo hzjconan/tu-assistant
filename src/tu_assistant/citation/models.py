@@ -20,3 +20,4 @@ class Citation:
     verdict: str = "incomplete"      # ok / corrected / not_found / incomplete
     span: tuple[int, int] = (0, 0)   # 在原文中的起止位置
     quote_span: tuple[int, int] | None = None  # 原文引用块的位置
+    fallback_para_match: bool = False  # 多款条文未写款号，凭引文唯一匹配某款的兼容回退（T077 口径 C）

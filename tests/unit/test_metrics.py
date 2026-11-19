@@ -8,7 +8,10 @@ from tu_assistant.eval.metrics import (
     intent_score,
     multi_violation_score,
     refusal_correct,
+    relation_completion_score,
 )
+from tu_assistant.kb.models import ClauseRelation
+from tu_assistant.kb.store import create_kb, insert_relation
 
 
 class TestRecallPrecision:
@@ -83,3 +86,26 @@ class TestBehaviorMetrics:
         assert intent_score(turns, {"intent": "consult"}) == 1.0
         assert intent_score(turns[:1], {"intent": "consult"}) == 0.0
         assert intent_score(turns, {"intent": "missing"}) == 0.0
+
+
+class TestRelationCompletionScore:
+    def test_deduplicates_shared_liability_target(self):
+        conn = create_kb(":memory:")
+        # 整条展开：a21:p1 与 a21:p2 都指向同一个责任条款 a40:p1；另有一条 a3:p1 -> a51:p1
+        insert_relation(conn, ClauseRelation("d:a21:p1", "d:a40:p1", "liability_for", "rule", True))
+        insert_relation(conn, ClauseRelation("d:a21:p2", "d:a40:p1", "liability_for", "rule", True))
+        insert_relation(conn, ClauseRelation("d:a3:p1", "d:a51:p1", "liability_for", "rule", True))
+        # references 不计入 SC-005
+        insert_relation(conn, ClauseRelation("d:a21:p1", "d:a99:p1", "references", "rule", True))
+        conn.commit()
+
+        # 同时引用 a21:p1、a21:p2 且只补全了 a40:p1，未补全 a51:p1：
+        # 去重后责任条款集合为 {a40:p1, a51:p1} → 1/2 = 0.5（而非按边算 2/3）
+        score = relation_completion_score({"d:a21:p1", "d:a21:p2", "d:a3:p1", "d:a40:p1"}, conn)
+        assert score == 0.5
+
+        # 只引用 a21:p1 与 a21:p2 且补全 a40:p1 → 1/1 = 1.0
+        assert relation_completion_score({"d:a21:p1", "d:a21:p2", "d:a40:p1"}, conn) == 1.0
+        # 无触发责任关系 → None
+        assert relation_completion_score({"d:a1:p1"}, conn) is None
+        conn.close()

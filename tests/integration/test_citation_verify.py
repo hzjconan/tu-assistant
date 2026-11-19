@@ -91,3 +91,13 @@ def test_article_with_exact_quote_resolves_clause():
     c = r.citations[0]
     assert c.resolved_clause_id.endswith(":a3:p1")
     assert c.verdict == "ok"
+
+
+def test_single_para_with_items_autofills_without_quote():
+    conn = _kb()
+    r = verify_output("〔《示例工会法》（2020）第三条〕", conn)
+    c = r.citations[0]
+    assert c.resolved_clause_id.endswith(":a3:p1")
+    assert c.verdict == "ok"
+    assert not c.fallback_para_match
+    assert "（一）" in r.text and "（二）" in r.text

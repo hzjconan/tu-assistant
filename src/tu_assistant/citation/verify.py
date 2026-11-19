@@ -33,11 +33,16 @@ class VerifyResult:
             s[c.verdict] = s.get(c.verdict, 0) + 1
         return s
 
+    @property
+    def fallback_para_matches(self) -> int:
+        """多款条文未写款号、凭引文唯一匹配某款的兼容回退次数（T077 口径 C）。"""
+        return sum(1 for c in self.citations if c.fallback_para_match)
+
 
 def _resolve(
     conn: sqlite3.Connection, c: Citation
-) -> tuple[Clause | None, str, list[Clause]]:
-    """返回 (匹配行, 版本修正后的 version_label, 该条全部行)。"""
+) -> tuple[Clause | None, str, list[Clause], bool]:
+    """返回 (匹配行, 版本修正后的 version_label, 该条全部行, 是否多款引文回退)。"""
     rows = article_clauses(conn, c.title, c.article_no, version_label=c.version_label)
     version_label = c.version_label
     if not rows and c.version_label:
@@ -66,7 +71,9 @@ def _resolve(
             if cur and cur[0]:
                 version_label = cur[0]
     if not rows:
-        return None, version_label, []
+        return None, version_label, [], False
+
+    distinct_paras = {r.paragraph_no for r in rows}
 
     if c.item_no is not None:
         if c.paragraph_no is not None:
@@ -78,10 +85,10 @@ def _resolve(
                 ),
                 None,
             )
-            return row, version_label, rows
+            return row, version_label, rows, False
         item_rows = [r for r in rows if r.item_no == c.item_no]
         if len(item_rows) == 1:
-            return item_rows[0], version_label, rows
+            return item_rows[0], version_label, rows, False
     elif c.paragraph_no is not None:
         row = next(
             (
@@ -91,18 +98,25 @@ def _resolve(
             ),
             None,
         )
-        return row, version_label, rows
-    elif len(rows) == 1:
-        # 只给了条号：整"条"只有一行（单款无项）才能精确解析
-        return rows[0], version_label, rows
+        return row, version_label, rows, False
+    elif len(distinct_paras) == 1:
+        # 只给了条号且该条只有 1 款（含单款无项与单款含项）：无歧义定位该款主行
+        main_rows = [r for r in rows if r.item_no is None]
+        if len(main_rows) == 1:
+            return main_rows[0], version_label, rows, False
 
     if c.quoted_text:
         candidates = [
             r for r in rows if _canonical_for_row(r, rows) == c.quoted_text
         ]
         if len(candidates) == 1:
-            return candidates[0], version_label, rows
-    return None, version_label, rows  # 编号/原文都不能唯一定位：incomplete
+            is_multi_para_fallback = (
+                c.paragraph_no is None
+                and c.item_no is None
+                and len(distinct_paras) >= 2
+            )
+            return candidates[0], version_label, rows, is_multi_para_fallback
+    return None, version_label, rows, False  # 编号/原文都不能唯一定位：incomplete
 
 
 def _canonical_for_row(row: Clause, rows: list[Clause]) -> str:
@@ -134,7 +148,7 @@ def verify_output(text: str, conn: sqlite3.Connection) -> VerifyResult:
             c.verdict = "incomplete"
             continue
 
-        row, version_label, rows = _resolve(conn, c)
+        row, version_label, rows, is_fallback = _resolve(conn, c)
         if not rows:
             c.verdict = "not_found"
             end = c.quote_span[1] if c.quote_span else c.span[1]
@@ -146,6 +160,7 @@ def verify_output(text: str, conn: sqlite3.Connection) -> VerifyResult:
             continue
 
         c.resolved_clause_id = row.clause_id
+        c.fallback_para_match = is_fallback
         canonical = row.text
         if c.item_no is None:
             # "第M款"包含该款下的各项：原文 = 引言 + 各项

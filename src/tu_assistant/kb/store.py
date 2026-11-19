@@ -127,6 +127,21 @@ def insert_relation(conn: sqlite3.Connection, r: ClauseRelation) -> None:
     )
 
 
+def delete_relation(
+    conn: sqlite3.Connection,
+    from_clause_id: str,
+    to_clause_id: str,
+    relation_type: str,
+) -> int:
+    """删除指定条款关联，返回实际删除行数。"""
+    cur = conn.execute(
+        """DELETE FROM clause_relations
+           WHERE from_clause_id=? AND to_clause_id=? AND relation_type=?""",
+        (from_clause_id, to_clause_id, relation_type),
+    )
+    return cur.rowcount
+
+
 def article_clauses(
     conn: sqlite3.Connection,
     title: str,

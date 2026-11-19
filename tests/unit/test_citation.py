@@ -28,6 +28,10 @@ def conn():
                text="（一）职工二十五人以上的，应当建立基层工会委员会；"),
         Clause(meta.doc_id, 3, 1, 2, "第三条第二项",
                text="（二）不足二十五人的，可以单独建立。"),
+        Clause(meta.doc_id, 10, 1, None, "第十条第1款",
+               text="企业应当保障职工民主管理权利。"),
+        Clause(meta.doc_id, 10, 2, None, "第十条第2款",
+               text="企业不得打击报复依法履职的职工代表。"),
     ]
     for cl in clauses:
         insert_clause(c, cl)
@@ -117,7 +121,46 @@ class TestVerify:
         r = verify_output(text, conn)
         assert r.citations[0].verdict == "ok"
 
-    def test_multi_para_article_only_incomplete(self, conn):
-        # 第三条有引言+两项 → 只写"第三条"无法唯一定位
+    def test_single_para_with_items_article_only_resolves(self, conn):
+        # 第三条只有 1 款（引言+两项）→ 只写"第三条"无歧义定位到 a3:p1 并补齐各项
         r = verify_output(f"{mark('三')}\n", conn)
+        c = r.citations[0]
+        assert c.verdict == "ok"
+        assert c.resolved_clause_id.endswith(":a3:p1")
+        assert not c.fallback_para_match
+        assert r.fallback_para_matches == 0
+        assert "（一）" in r.text and "（二）" in r.text
+
+    def test_multi_para_article_only_without_quote_incomplete(self, conn):
+        # 第十条有 2 款 → 只写"第十条"无引文无法唯一定位，判 incomplete
+        r = verify_output(f"{mark('十')}\n", conn)
         assert r.citations[0].verdict == "incomplete"
+        assert r.fallback_para_matches == 0
+
+    def test_multi_para_article_only_with_exact_quote_fallback_counted(self, conn):
+        # 口径 C：多款条文未写款号但引文唯一匹配第一款 → 兼容回退落回 a10:p1 并单独计数
+        text = f"{mark('十')}\n> 企业应当保障职工民主管理权利。"
+        r = verify_output(text, conn)
+        c = r.citations[0]
+        assert c.verdict == "ok"
+        assert c.resolved_clause_id.endswith(":a10:p1")
+        assert c.fallback_para_match is True
+        assert r.fallback_para_matches == 1
+
+    def test_multi_para_article_only_with_wrong_quote_incomplete(self, conn):
+        # 多款条文未写款号且引文不匹配 → 仍判 incomplete
+        text = f"{mark('十')}\n> 企业应当随意管理职工。"
+        r = verify_output(text, conn)
+        assert r.citations[0].verdict == "incomplete"
+        assert r.fallback_para_matches == 0
+
+    def test_multi_para_explicit_first_para_resolves_without_fallback(self, conn):
+        # 显式写"第十条第1款"：省略或写错引文都能定位并纠错，不计入回退
+        text = f"{mark('十', para='1')}\n> 写错的原文。"
+        r = verify_output(text, conn)
+        c = r.citations[0]
+        assert c.verdict == "corrected"
+        assert c.resolved_clause_id.endswith(":a10:p1")
+        assert not c.fallback_para_match
+        assert r.fallback_para_matches == 0
+        assert "企业应当保障职工民主管理权利。" in r.text

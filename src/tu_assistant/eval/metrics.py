@@ -73,18 +73,21 @@ def multi_violation_score(cited_ids: set[str], gold_violations: list[dict]) -> f
 
 
 def relation_completion_score(cited_ids: set[str], kb_conn) -> float | None:
-    """SC-005：关联条款完整率。
+    """SC-005：关联条款完整率（按去重后的责任条款计分，避免整条展开重复计数）。
 
-    对每个被引用且有已确认关联的条款，其关联条款也应出现在输出中。
+    对每个被引用且有已确认责任关联的条款，收集其对应的去重责任条款集合，
+    计算已出现在输出中的比例。
     """
     from ..kb.store import confirmed_relations_from
 
     relations = confirmed_relations_from(kb_conn, list(cited_ids))
-    liability_rels = [r for r in relations if r.relation_type == "liability_for"]
-    if not liability_rels:
+    liability_targets = {
+        r.to_clause_id for r in relations if r.relation_type == "liability_for"
+    }
+    if not liability_targets:
         return None
-    hit = sum(1 for r in liability_rels if r.to_clause_id in cited_ids)
-    return hit / len(liability_rels)
+    hit = sum(1 for tid in liability_targets if tid in cited_ids)
+    return hit / len(liability_targets)
 
 
 RE_ARTICLE_SEP = re.compile(r"(?m)^-{3,}\s*$")
