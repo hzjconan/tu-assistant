@@ -63,9 +63,11 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 - [x] T017 实现规则抽取条款关联 `src/tu_assistant/kb/relations.py`：识别"违反本法第X条""依照第X条"等显式引用，生成 `relations_pending.jsonl`（`origin=rule`，`confirmed=false`）
 - [x] T018 实现 `tu kb relations extract` / `tu kb relations confirm <file>`；"只有确认过的关联用于训练数据和关联补全指标"（data-model.md）
-- [ ] T019 用户人工确认关联关系：在 `artifacts/kb/relations_pending.jsonl` 中逐条标注 `confirmed`，用 `tu kb relations confirm` 导入（说明写在 `docs/relations-confirm-guide.md`）
+- [x] T019 用户人工确认关联关系：在 `artifacts/kb/relations_pending.jsonl` 中逐条标注 `confirmed`，用 `tu kb relations confirm` 导入（说明写在 `docs/relations-confirm-guide.md`）
+  - 2026-11-19 两批全部完成并导入 `kb-20261119-045641`（合计 67 条已确认：`liability_for` 26 + `references` 41；撤销旧错边共 10 条）。三份审阅源文件已归档至 `data/relation-reviews/`（旧基线 35 条 + 第一批 29 行 + 第二批 47 行），`relation_samples` 67/67 通过校验。[第二批执行单与对账记录](../../docs/handoffs/T019-relations-batch2-handoff.md)
 - [x] T077 修正责任关系的条、款定位并追溯影响。复现 T052 独立复审核实的 6 对错款，另核对 2 处整条引用的覆盖范围。对多款条文明确整条与第一款的编号、各自应配的原文和校验层解析口径，并核查历史样本；排查提取与确认逻辑，修正候选经 T019 用户审阅后写入新 KB 版本。核对知识类关系样本和 SC-005 的前后差异，保留历史数据集、run 与 KB 供比对。已训练 adapter 对这些关系的掌握情况需另行实测。[问题清单](../../docs/handoffs/T052-article-synthesis-handoff.md#84-不阻断-t052t057-扩量前须处理)
   - 2026-11-19 独立复审通过并完成收尾：从 `kb-20261113-093057` 派生 `kb-20261119-045641`（787 条多款条文第 1 款显式标 `第1款`，历史产物零改动），导入第一批 `liability_for` 审定差异（撤销 6 旧错边、新增 20，共 26 对可用且 `paragraph_mismatch=0`；审阅文件归档 `data/relation-reviews/`），落地口径 C 校验与 SC-005/编排去重，完成历史对账与 `exp-20261116-resume500` 24 探针实测。[执行单与复审记录](../../docs/handoffs/T077-relation-clause-handoff.md#6-独立复审2026-11-19)
+- [ ] T078 修复《上海市工伤保险实施办法》（63/63 条）括号条旨（如“（鉴定程序）”）被 `kb/parse.py` 误切为第 1 款导致款号整体顺延 +1 的问题；同步评估受影响的 5 道 `eval/cases/v1/reviewed.jsonl` 用例（含 SC-016 基线 `cand-039`）、历史基线兼容性与该文件条款关联（T019 第二批行 18–25 暂 `reject`）重抽。不阻塞当前 POC 演示，可留待正式阶段或另行排期（诊断见 `artifacts/logs/t019/p1_heading_diagnosis.md`）
 
 ### 出处校验层（宪章原则 I）
 
