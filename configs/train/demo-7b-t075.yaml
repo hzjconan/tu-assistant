@@ -1,0 +1,28 @@
+# T075: one epoch on the T057 article dataset, starting from resume500.
+exp_id: "exp-t075-7b-article-01"
+base_model: "mlx-community/Qwen2.5-7B-Instruct-4bit"
+base_license: "Apache-2.0"
+hardware: "M1 Pro / 32GB"
+
+data: "artifacts/datasets/ds-kb-20261119-045641-8247"
+resume_adapter_file: "artifacts/train/exp-20261116-resume500/adapters/adapters.safetensors"
+
+batch_size: 1
+iters: 8962
+learning_rate: 0.00005
+lr_schedule:
+  name: cosine_decay
+  arguments: [0.00005, 8962]
+  warmup: 100
+save_every: 500
+max_seq_length: 2048
+grad_checkpoint: true
+mask_prompt: true
+seed: 43
+
+lora:
+  rank: 8
+  alpha: 16
+  scale: 10.0
+  dropout: 0.0
+  num_layers: -1
