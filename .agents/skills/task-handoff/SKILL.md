@@ -2,7 +2,7 @@
 name: task-handoff
 description: >-
   Draft or revise a task handoff document in docs/handoffs/ using a high-thinking
-  designer node (e.g. gemini-4-neon-xhigh via single-node swarm) before writing
+  designer node (e.g. gemini-4-neon-high via single-node swarm) before writing
   any implementation code. Use this skill whenever the user asks to plan the
   next step, draft a task handoff/design, or revise an existing handoff based on
   user or external model review feedback.
@@ -23,16 +23,16 @@ description: >-
 
 1. **首选 · 单节点高思考设计师（适用于支持精确指定模型的工具，如 Antigravity 的 `swarm`）**：
    - 若当前主会话运行在较轻档位（如 `gemini-4-neon-medium`），通过 `swarm` **仅拉起 1 个设计节点**：
-     - `name="designer"`、`model="gemini-4-neon-xhigh"`（若不可用则顺次降级至 `gemini-4-neon-high` 或同系列最高可用思考档位）、`workspace="inherit"`（不建 worktree，严禁并发拉起多个节点）。
+     - `name="designer"`、`model="gemini-4-neon-high"`（若不可用则选同系列最高可用思考档位）、`workspace="inherit"`（不建 worktree，严禁并发拉起多个节点）。
    - 在 `brief` 中明文约束：
      - 先做只读摸底，严禁读取 `inputs/`；
      - 只允许创建或修改 `docs/handoffs/<task>-handoff.md`，严禁修改任何其他文件；
      - 完成后在公告板汇报执行单路径、推荐理由与待确认决策点。
    - **保留上下文以承接修改（关键）**：初稿完成后**不要 `kill` `designer`**！让其留在公告板上进入 `waiting` 休眠状态（不消耗额度且完整保留摸底上下文）。
-   - **后续审稿修改**：若同一会话内用户贴回自己或外部模型的审稿意见要求修改执行单，主会话**直接转发给休眠中的 `@designer`**（复用同一 `gemini-4-neon-xhigh` 节点与上下文），由它核实意见、原地修订执行单并逐条回应；若处于新会话、原 `designer` 不存在，则读取已落盘的执行单与审稿意见后新拉 1 个 `designer` 修订。
+   - **后续审稿修改**：若同一会话内用户贴回自己或外部模型的审稿意见要求修改执行单，主会话**直接转发给休眠中的 `@designer`**（复用同一 `gemini-4-neon-high` 节点与上下文），由它核实意见、原地修订执行单并逐条回应；若处于新会话、原 `designer` 不存在，则读取已落盘的执行单与审稿意见后新拉 1 个 `designer` 修订。
    - **回收时机**：直到用户明确同意按执行单开始实施（或明确取消该执行单）时，再立刻 `swarm(action="kill", name="designer")` 回收节点，并用 `git status` 确认未误改其他文件，随后由主会话（`medium`）接手编码实现。
 2. **降级 · 当前会话直接起草**：
-   - 若当前主会话本身已是同等或更高思考档位（如 `gemini-4-neon-xhigh`），或当前 CLI 不支持单节点精确指定模型，则直接在当前会话按下方规范完成摸底、起草与修订。
+   - 若当前主会话本身已是高思考模型（如 `gemini-4-neon-high`），或当前 CLI 不支持单节点精确指定模型，则直接在当前会话按下方规范完成摸底、起草与修订。
 
 ## 执行单起草与核实标准
 
