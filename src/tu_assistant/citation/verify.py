@@ -25,6 +25,8 @@ NOT_FOUND_PLACEHOLDER = "〔此处引用未通过校验，已删除〕"
 class VerifyResult:
     text: str                     # 校验后的输出（交付给用户）
     citations: list[Citation] = field(default_factory=list)
+    # 最终交付文本中已核准标记与 KB 确认原文的半开区间 [start, end)
+    protected_spans: list[tuple[int, int]] = field(default_factory=list)
 
     @property
     def stats(self) -> dict[str, int]:
@@ -139,9 +141,11 @@ def _fix_version_in_raw(raw: str, version_label: str) -> str:
 
 
 def verify_output(text: str, conn: sqlite3.Connection) -> VerifyResult:
-    """校验输出文本，返回修正后的文本与各引用的判定结果。"""
+    """校验输出文本，返回修正后的文本、各引用的判定结果与核准区间。"""
     citations = parse_citations(text)
-    edits: list[tuple[int, int, str]] = []
+    # (start, end, kind, repl, protect_slice)
+    # kind: "edit"（替换/插入）或 "keep"（原样保留但须受保护）
+    events: list[tuple[int, int, str, str, tuple[int, int] | None]] = []
 
     for c in citations:
         if not c.title or c.article_no is None:
@@ -152,7 +156,7 @@ def verify_output(text: str, conn: sqlite3.Connection) -> VerifyResult:
         if not rows:
             c.verdict = "not_found"
             end = c.quote_span[1] if c.quote_span else c.span[1]
-            edits.append((c.span[0], end, NOT_FOUND_PLACEHOLDER))
+            events.append((c.span[0], end, "edit", NOT_FOUND_PLACEHOLDER, None))
             continue
 
         if row is None:
@@ -180,21 +184,67 @@ def verify_output(text: str, conn: sqlite3.Connection) -> VerifyResult:
         )
         version_wrong = marker_fixed != c.raw
         if version_wrong:
-            edits.append((c.span[0], c.span[1], marker_fixed))
+            events.append(
+                (
+                    c.span[0],
+                    c.span[1],
+                    "edit",
+                    marker_fixed,
+                    (0, len(marker_fixed)),
+                )
+            )
+        else:
+            events.append((c.span[0], c.span[1], "keep", "", None))
 
         if c.quoted_text is None:
-            # 省略原文 → 自动补入
-            edits.append((c.span[1], c.span[1], f"\n> {canonical}"))
+            # 省略原文 → 自动补入；仅保护 "> {canonical}"，不含前导换行
+            repl = f"\n> {canonical}"
+            events.append((c.span[1], c.span[1], "edit", repl, (1, len(repl))))
         elif c.quoted_text != canonical:
             q0, q1 = c.quote_span
-            edits.append((q0, q1, f"> {canonical}"))
+            repl = f"> {canonical}"
+            events.append((q0, q1, "edit", repl, (0, len(repl))))
             c.verdict = "corrected"
             continue
+        else:
+            q0, q1 = c.quote_span
+            events.append((q0, q1, "keep", "", None))
         c.verdict = "corrected" if version_wrong else "ok"
 
-    # 从右往左应用编辑
-    out = text
-    for start, end, repl in sorted(edits, key=lambda e: e[0], reverse=True):
-        out = out[:start] + repl + out[end:]
+    # 从左往右应用编辑，精确追踪最终交付文本中的核准区间
+    chunks: list[str] = []
+    protected_spans: list[tuple[int, int]] = []
+    out_len = 0
+    cursor = 0
+    for start, end, kind, repl, protect_slice in sorted(
+        events, key=lambda e: (e[0], e[1])
+    ):
+        if start < cursor:
+            continue
+        if start > cursor:
+            seg = text[cursor:start]
+            chunks.append(seg)
+            out_len += len(seg)
+            cursor = start
+        if kind == "keep":
+            seg = text[start:end]
+            protected_spans.append((out_len, out_len + len(seg)))
+            chunks.append(seg)
+            out_len += len(seg)
+            cursor = end
+        else:
+            chunks.append(repl)
+            if protect_slice is not None:
+                p0, p1 = protect_slice
+                protected_spans.append((out_len + p0, out_len + p1))
+            out_len += len(repl)
+            cursor = end
 
-    return VerifyResult(text=out, citations=citations)
+    if cursor < len(text):
+        chunks.append(text[cursor:])
+
+    return VerifyResult(
+        text="".join(chunks),
+        citations=citations,
+        protected_spans=protected_spans,
+    )

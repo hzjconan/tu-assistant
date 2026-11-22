@@ -43,13 +43,20 @@ def _run_case(
                         "raw_content": reply.raw_content,
                         "question_count": reply.question_count,
                         "intent": reply.intent,
+                        "anonymize": assistant._last_turn_anonymize_info(sid),
                     }
                 )
             final_raw = reply.raw_content or reply.content if reply else ""
             final_text = reply.content if reply else ""
         else:
             reply = assistant.send(sid, case.input["message"])
-            turns = [{"user": case.input["message"], "content": reply.content}]
+            turns = [
+                {
+                    "user": case.input["message"],
+                    "content": reply.content,
+                    "anonymize": assistant._last_turn_anonymize_info(sid),
+                }
+            ]
             final_raw = reply.raw_content or reply.content
             final_text = reply.content
     finally:
@@ -133,6 +140,18 @@ def _render_report(run_id: str, exp_id: str | None, results: list[dict]) -> str:
             ac_n += 1
             ac_ok += 1 if ac["ok"] else 0
 
+    blocked_turns: list[tuple[str, int]] = []
+    for r in results:
+        for idx, t in enumerate(r.get("turns", []), 1):
+            if (t.get("anonymize") or {}).get("blocked"):
+                blocked_turns.append((r["case_id"], idx))
+
+    def _blocked_summary() -> str:
+        if not blocked_turns:
+            return "0 轮"
+        detail = "、".join(f"{cid} 第{tn}轮" for cid, tn in blocked_turns)
+        return f"{len(blocked_turns)} 轮（{detail}）"
+
     def _sc011() -> str:
         if not id_cases:
             return "-（无身份标注题）"
@@ -166,6 +185,7 @@ def _render_report(run_id: str, exp_id: str | None, results: list[dict]) -> str:
         f"| 多违规识别率 | {_fmt(_cat_mean('multi_violation'))} | SC-004 |",
         f"| 意图确认 | {_fmt(_cat_mean('intent'))} | SC-001 |",
         f"| 文章身份检查 | {_sc011()} | SC-011 |",
+        f"| 引用冲突暂缓交稿 | {_blocked_summary()} | T054（零交稿不计入 SC-011） |",
         (
             f"| 文章篇数符合 | {ac_ok}/{ac_n} 题 | FR-028 |"
             if ac_n

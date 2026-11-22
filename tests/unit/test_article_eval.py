@@ -197,21 +197,21 @@ class _FakeResp:
 
 
 def test_run_eval_article_branch(tmp_path, monkeypatch):
-    """固定回复跑 run_eval：第二篇泄露 → results/report 均为 2/3。"""
+    """固定回复跑 run_eval：规则范围外专名在第二篇泄露 → results/report 均为 2/3。"""
     kb = _mk_kb(tmp_path / "kb" / "kb-test.sqlite")
     consult = "## 违法行为认定\n拖欠工资成立。"
     articles = (
-        _art("其一") + "\n---\n" + _art("其二", name="栖梧样例厂")
+        _art("其一") + "\n---\n" + _art("其二", name="栖梧车间")
         + "\n---\n" + _art("其三")
     )
     article_case = {
         "case_id": "a1",
         "category": "article",
         "input": {
-            "script": ["我是栖梧样例厂的周岚，厂里欠薪。", "写三篇普法文章。"]
+            "script": ["我在栖梧车间上班，这里欠薪。", "写三篇普法文章。"]
         },
         "gold": {
-            "protected_names": [{"name": "栖梧样例厂", "turn": 1}],
+            "protected_names": [{"name": "栖梧车间", "turn": 1}],
             "expect_articles": [None, 3],
             "rubric": ["虚构名称"],
         },
@@ -252,7 +252,7 @@ def test_run_eval_article_branch(tmp_path, monkeypatch):
     ar = next(r for r in results if r["case_id"] == "a1")
     ic = ar["scores"]["identity_check"]
     assert ic["passed"] == 2 and ic["total"] == 3
-    assert ic["items"][1]["leaked"] == ["栖梧样例厂"]
+    assert ic["items"][1]["leaked"] == ["栖梧车间"]
     ac = ar["scores"]["article_count"]
     assert ac["expected"] == [None, 3] and ac["per_turn"] == [0, 3] and ac["ok"]
     cr = next(r for r in results if r["case_id"] == "c1")
@@ -260,6 +260,43 @@ def test_run_eval_article_branch(tmp_path, monkeypatch):
 
     report = (Path(out["dir"]) / "report.md").read_text()
     assert "SC-011" in report and "2/3" in report
+
+
+def test_run_eval_article_branch_anonymized(tmp_path, monkeypatch):
+    """规则覆盖的单位与姓名经完整链脱敏：标准多篇全部通过，交付文本已去名。"""
+    consult = "## 违法行为认定\n拖欠工资成立。"
+    articles = (
+        _art("其一") + "\n---\n" + _art("其二", name="青砾建筑公司", tail="，当事人林川")
+        + "\n---\n" + _art("其三")
+    )
+    case = {
+        "case_id": "a1-anon",
+        "category": "article",
+        "input": {
+            "script": ["我叫林川，在青砾建筑公司做施工，公司欠薪。", "写三篇普法文章。"]
+        },
+        "gold": {
+            "protected_names": [
+                {"name": "青砾建筑公司", "turn": 1},
+                {"name": "林川", "turn": 1},
+            ],
+            "expect_articles": [None, 3],
+            "rubric": ["虚构名称"],
+        },
+        "source": "manual",
+    }
+    results, report = _run_eval_stub(tmp_path, monkeypatch, [case], [consult, articles])
+    ar = results[0]
+    ic = ar["scores"]["identity_check"]
+    assert ic["passed"] == 3 and ic["total"] == 3
+    assert "青砾建筑公司" not in ar["final_text"]
+    assert "林川" not in ar["final_text"]
+    assert ar["turns"][1]["anonymize"] == {
+        "person_replacements": 1,
+        "org_replacements": 1,
+        "blocked": False,
+    }
+    assert "3/3" in report
 
 
 def _run_eval_stub(tmp_path, monkeypatch, cases_rows, replies):
@@ -420,18 +457,53 @@ def test_regular_refusal_report(tmp_path, monkeypatch):
 
 
 def test_unparsed_article_leak(tmp_path, monkeypatch):
-    case = _published_article("article-009")
+    """规则范围外专名在未拆篇稿件中泄露：unparsed_leaks 定位第 2 轮，报告保留报警。"""
+    case = {
+        "case_id": "article-unparsed-leak",
+        "category": "article",
+        "input": {
+            "script": [
+                "我们在栖梧车间干活被拖欠了两个月工资，怎么维权？",
+                "行，那就按这个案情写三篇普法文章，发在宣传栏。",
+            ]
+        },
+        "gold": {
+            "expect_articles": [None, 3],
+            "protected_names": [{"name": "栖梧车间", "turn": 1}],
+        },
+        "source": "manual",
+    }
     text = "\n---\n".join(
         f"# {title}\n**案例**\n{name}发生欠薪。\n**以案说法**\n……\n**普法提示**\n……"
-        for title, name in [("其一", "甲厂"), ("其二", "栖梧样例厂"), ("其三", "乙厂")]
+        for title, name in [("其一", "甲厂"), ("其二", "栖梧车间"), ("其三", "乙厂")]
+    )
+    results, report = _run_eval_stub(tmp_path, monkeypatch, [case], ["提到欠薪。", text])
+    check = results[0]["scores"]["identity_check"]
+    assert check["total"] == check["passed"] == 0
+    assert check["reason"] == "未识别出文章结构"
+    assert check["unparsed_leaks"] == [{"turn": 2, "leaked": ["栖梧车间"]}]
+    assert "另有 1 轮未识别出文章结构但含保护名称" in report
+    assert results[0]["scores"]["article_count"]["ok"] is False
+
+
+def test_unparsed_article_anonymized(tmp_path, monkeypatch):
+    """规则覆盖单位/姓名在非标准稿件中经完整链脱敏：零可评篇且无未拆篇泄露，交付已去名。"""
+    case = _published_article("article-009")
+    text = "\n---\n".join(
+        f"# {title}\n**案例**\n{name}的{person}反映发生欠薪。\n**以案说法**\n……\n**普法提示**\n……"
+        for title, name, person in [
+            ("其一", "甲厂", "小李"),
+            ("其二", "栖梧样例厂", "周岚"),
+            ("其三", "乙厂", "小王"),
+        ]
     )
     results, report = _run_eval_stub(tmp_path, monkeypatch, [case], ["周岚提到欠薪。", text])
     check = results[0]["scores"]["identity_check"]
     assert check["total"] == check["passed"] == 0
-    assert check["reason"] == "未识别出文章结构"
-    assert check["unparsed_leaks"] == [{"turn": 2, "leaked": ["栖梧样例厂"]}]
-    assert "另有 1 轮未识别出文章结构但含保护名称" in report
-    assert results[0]["scores"]["article_count"]["ok"] is False
+    assert check["unparsed_leaks"] == []
+    assert "栖梧样例厂" not in results[0]["final_text"]
+    assert "周岚" not in results[0]["final_text"]
+    assert "未识别出文章结构但含保护名称" not in report
 
 
 def test_article_count_per_turn(tmp_path, monkeypatch):

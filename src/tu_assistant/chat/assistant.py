@@ -91,5 +91,21 @@ class TrainedAssistant:
     def export_markdown(self, session_id: str, turn_index: int | None = None) -> str:
         return export_markdown(self._sessions[session_id], turn_index)
 
+    def _last_turn_anonymize_info(self, session_id: str) -> dict:
+        """仅供合成评测 runner 在 close 前读取最近一轮的内存脱敏统计。"""
+        session = self._sessions.get(session_id)
+        if not session or not session.messages:
+            return {
+                "person_replacements": 0,
+                "org_replacements": 0,
+                "blocked": False,
+            }
+        last = session.messages[-1]
+        return {
+            "person_replacements": last.person_replacements,
+            "org_replacements": last.org_replacements,
+            "blocked": last.anonymize_blocked,
+        }
+
     def close(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)

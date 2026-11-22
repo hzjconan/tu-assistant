@@ -141,6 +141,11 @@ def article_identity_check(
             if pn.get("turn") == i:
                 known.add(pn["name"])
         content = t.get("content") or ""
+        blocked = bool((t.get("anonymize") or {}).get("blocked"))
+        if blocked:
+            if reason == "无可评文章":
+                reason = "引文冲突暂缓交稿"
+            continue
         articles = extract_articles(content)
         if article_turns and i in article_turns and not articles and content.strip():
             leaked = sorted(n for n in known if n in content)

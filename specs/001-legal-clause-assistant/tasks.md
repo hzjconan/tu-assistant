@@ -151,9 +151,12 @@ description: "Task list for 001-legal-clause-assistant (POC)"
   - 2026-11-19 经用户确认完成。第二轮校订后的三条候选已通过结构、引用及训练长度复核。[最终校订记录](../../docs/handoffs/T052-article-synthesis-handoff.md#11-第二轮校订记录2026-11-19)
 - [x] T053 [P] [US2] 实现修改请求样本合成（"语言再通俗一些""换一个违法主体"），加入 `src/tu_assistant/synth/articles.py`
   - 2026-11-19 经内部 3 轮只读复审与第三方模型复审通过，用户确认完成。落地 `generate_revisions`（`plainer` / `swap_subject`）、`normalize_draft_markers`、运行时历史轮回填、三道 ≤2048 关卡、逐轮评测去重与 `actor_residual` 检查；整理 7 条新 KB 确认初稿（723–960 tok）与 12 条人工确认修改样本（1,314–1,804 tok，`parent` 12/12 可追溯），新增学习文档 `[L4.5.2]`。[执行单与复审记录](../../docs/handoffs/T053-article-revision-handoff.md)
-- [ ] T054 [P] [US2] 实现身份信息检查 `src/tu_assistant/chat/anonymize.py`：从本会话用户消息中按规则抽取候选身份信息（单位后缀"公司/厂/集团/医院/学校"、常见姓氏 + 名字），文章命中则替换为虚构名称并记录（FR-030）
-- [ ] T055 [P] [US2] 单元测试 `tests/unit/test_anonymize.py`：真实名称被替换、虚构名称不受影响
+- [x] T054 [P] [US2] 实现身份信息检查 `src/tu_assistant/chat/anonymize.py`：从本会话用户消息中按规则抽取候选身份信息（单位后缀"公司/厂/集团/医院/学校"、常见姓氏 + 名字），文章命中则替换为虚构名称并记录（FR-030）
+  - 2026-11-22 经内部 3 轮独立只读复审通过并经用户确认验收。实现常见单姓人名与五类单位字面全称抽取、意图与续改状态判定、稳定虚构代称分配与一次扫描替换、`verify_output` 核准区间追踪与引文冲突暂缓交稿、以及 `Reply.citations` 安全元数据清洗；本机父模型实测 `run-20261122-090101` SC-011 达 2/2、引用冲突 0 轮，新增学习文档 `[L6.3]`。[执行单与复审记录](../../docs/handoffs/T054-article-identity-handoff.md)
+- [x] T055 [P] [US2] 单元测试 `tests/unit/test_anonymize.py`：真实名称被替换、虚构名称不受影响
+  - 2026-11-22 经内部 3 轮独立只读复审通过并经用户确认验收，全量 `uv run pytest` 282 passed / 6 xfailed（含 68 题 69 条负对照、T075 三条彩排提示、粘连/核准冲突/未核准引语、入口与导出隔离及 R1/R2 回归用例），`ruff` 全绿。
 - [ ] T056 [US2] 在 `src/tu_assistant/chat/orchestrator.py` 中接入文章数量（默认 3，上限 10，读取 `SessionConfig`）与身份信息检查（依赖 T054）
+  - 进度（2026-11-22）：身份信息检查接线（含 `orchestrator.py`、`assistant.py`、`session.py`、`eval/runner.py` 与 `eval/metrics.py` 适配）已随 T054/T055 完成并验收；文章数量控制待办。
 - [x] T057 [US2] 将 T052、T053 样本加入 `tu synth sft`，重新生成数据集
   - 2026-11-20 经内部 2 轮独立只读复审与外部模型复审通过，用户确认完成。产出固化文章池 `artifacts/synth/articles/t057-curated/`（22 初稿 + 24 修改稿 = 46 条，22 家族，6 部法规均衡覆盖，token 520–1,804）与新数据集 `artifacts/datasets/ds-kb-20261119-045641-8247/`（`train 8,962` / `valid 820`，`article` 252 = 2.81%，`refusal` 176 = 1.96%，新 KB 67/67 关系全部保留，`valid ∩ ds-8410 train = 0`，家族零泄漏，74 条 v1 评测去重零重合，全库 max 2,015 ≤ 2,048 token），同步更新 `docs/learning/04-training-data.md`（`[L4.5.3]` / `L4.7`）与 `00-glossary.md`。[执行单与验收记录](../../docs/handoffs/T057-article-dataset-handoff.md)
 - [x] T058 [US2] 编写评测集 v1 的普法文章用例约 10 题（含评分要点 `rubric`），加入 `eval/cases/v1/`，由用户审阅确认；实现 SC-011（身份信息）自动检查于 `src/tu_assistant/eval/metrics.py`
