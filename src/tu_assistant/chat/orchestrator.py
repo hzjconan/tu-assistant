@@ -24,6 +24,7 @@ from .anonymize import (
     extract_user_entities,
     sanitize_citations,
 )
+from .article_count import build_article_count_instruction, decide_article_count
 from .prompts import build_system_prompt
 from .session import Session, Turn, add_turn, to_openai_messages
 
@@ -52,12 +53,31 @@ def process_turn(
     eval_mode: bool = False,
 ) -> Turn:
     """处理一轮用户消息，返回助手 Turn（content 已校验与脱敏）。"""
+    decision = decide_article_count(
+        user_message,
+        session.config,
+        article_task_active=session.anonymize_state.article_task_active,
+    )
     extract_user_entities(
         user_message,
         session.anonymize_state,
         session.user_entities,
     )
     add_turn(session, Turn(role="user", content=user_message))
+
+    if decision.action == "rejected":
+        turn = Turn(
+            role="assistant",
+            content=decision.notice or "",
+            raw_content=None,
+            citations=[],
+            question_count=0,
+            requested_article_count=decision.requested,
+            target_article_count=decision.target,
+            article_count_action=decision.action,
+        )
+        add_turn(session, turn)
+        return turn
 
     system_prompt = (
         build_system_prompt(
@@ -67,8 +87,14 @@ def process_turn(
         if session.config.get("use_system_prompt", True)
         else None
     )
-    resp = client.chat(to_openai_messages(session, system_prompt),
-                       temperature=temperature)
+    messages = to_openai_messages(session, system_prompt)
+    if decision.action == "use_default" and decision.target is not None:
+        messages[-1] = {
+            **messages[-1],
+            "content": messages[-1]["content"]
+            + build_article_count_instruction(decision.target),
+        }
+    resp = client.chat(messages, temperature=temperature)
     raw = resp.content
 
     verified = verify_output(raw, kb_conn)
@@ -138,6 +164,9 @@ def process_turn(
         person_replacements=person_replacements,
         org_replacements=org_replacements,
         anonymize_blocked=anonymize_blocked,
+        requested_article_count=decision.requested,
+        target_article_count=decision.target,
+        article_count_action=decision.action,
     )
     add_turn(session, turn)
     return turn

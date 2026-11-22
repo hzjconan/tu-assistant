@@ -232,23 +232,35 @@ _RE_FICTIONAL_ORG = re.compile(
 _RE_CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
 
 # 意图判定正则
+_NEG_PREFIX = (
+    r"(?:不要|别|不用|不必|先不|暂不|不打算|不想|不让|不准|禁止|阻止|不允许|不能)"
+)
+_RE_LOCAL_NEG_SUFFIX = re.compile(
+    _NEG_PREFIX + r"(?:帮我|给我|让我|我|再|继续){0,2}\s*$"
+)
 _RE_NEGATE_ARTICLE = re.compile(
-    r"(?:不要|别|不用|不必|先不|暂不|不打算|不想|不让|不准|禁止|阻止|不允许)"
-    r"(?:写|撰写|生成|发|出|改|整理)(?:普法|以案说法)?(?:文章|短文|稿件|稿子|稿|案例|宣传)"
+    _NEG_PREFIX
+    + r"(?:帮我|给我|让我|我|再|继续){0,2}"
+    + r"(?:写|撰写|生成|发|出|改|整理)"
+    + r"[^。！？，,；;\n]{0,16}?"
+    + r"(?:普法|以案说法)?(?:文章|短文|稿件|稿子|稿|案例|宣传)"
 )
 _RE_EXPLICIT_WRITE = re.compile(
-    r"(?:(?<!不让)(?<!不准)(?<!禁止)(?<!阻止)(?<!不要)(?<!不想)(?<!不能)(?<!不用)(?<!不必)(?<!别)"
-    r"(?:写|撰写|生成|出|来|给我|帮我写|帮我生成|帮忙写|起草)"
+    r"(?:(?P<verb>(?:帮我生成|帮我写|帮忙写|撰写|生成|起草|给我|写|"
+    r"(?<![进发寄送带拿提导输指说看找查推])出|"
+    r"(?<![原后发传寄送带拿过回进出起上下])来))(?!了|过)"
     r"[^。！？\n]{0,36}?"
     r"(?:普法(?:宣传)?(?:文章|短文|案例)|以案说法(?:的)?(?:文章|短文)?|"
     r"宣传栏(?:短文|文章|稿)|科普(?:文章|短文)|一?篇(?:文章|短文|普法文)|几篇(?:文章|短文|普法文)|"
-    r"[两二三四五六七八九十\d]+篇(?:文章|短文|普法文|以案说法)))"
-    r"|(?:(?:把|将)[^。！？\n]{0,30}?(?:整理成|改写成|写成|编成)[^。！？\n]{0,16}?"
+    r"-?(?:[零〇一二两三四五六七八九十百千]+|\d+)"
+    r"(?:\s*[-~～到至]\s*-?(?:[零〇一二两三四五六七八九十百千]+|\d+))?"
+    r"\s*篇(?:文章|短文|普法文|以案说法)))"
+    r"|(?:(?:把|将)[^。！？\n]{0,30}?(?P<verb2>整理成|改写成|写成|编成)[^。！？\n]{0,16}?"
     r"(?:文章|短文|普法案例|普法文章|以案说法|宣传稿))"
 )
 _RE_EXPLICIT_REVISE = re.compile(
     r"(?:(?:把|将)?(?:文章|这篇|上一篇|稿子|稿件|初稿|以案说法|普法提示|案例部分)"
-    r"[^。！？\n]{0,24}?(?:改|修改|调整|换成|换一个|换个|重写|润色|简化|通俗|再发一版|再来一版))"
+    r"[^。！？\n]{0,24}?(?:改|修改|调整|换成|换一个|换个|重写|润色|简化|通俗|扩写|再发一版|再来一版))"
 )
 _RE_ELLIPTICAL_REVISE = re.compile(
     r"(?:再通俗|更通俗|通俗一点|通俗些|口语化|换个违法主体|换一个违法主体|"
@@ -542,20 +554,37 @@ def extract_user_entities(
     return added
 
 
-def classify_turn_intent(
-    user_message: str,
-    reply_text: str,
-    *,
-    has_citation: bool,
-    article_task_active: bool,
-    current_intent: str | None,
-) -> tuple[str | None, bool, bool]:
-    """判定本轮会话意图、文章任务续改状态及是否需执行文章身份检查。
+@dataclass(frozen=True)
+class UserIntentSignals:
+    """只依赖用户消息与会话活跃态的前置意图信号（与 article_count 共享）。"""
 
-    返回 (new_intent, new_article_task_active, should_check_identity)。
-    """
+    negated: bool
+    explicit_write: bool
+    explicit_revise: bool
+    elliptical_revise: bool
+    explicit_consult: bool
+
+
+def _has_non_negated_explicit_write(user_message: str) -> bool:
+    pos = 0
+    while True:
+        m = _RE_EXPLICIT_WRITE.search(user_message, pos)
+        if m is None:
+            return False
+        verb_start = m.start("verb") if m.group("verb") is not None else m.start("verb2")
+        if not _RE_LOCAL_NEG_SUFFIX.search(user_message[:verb_start]):
+            return True
+        pos = m.start() + 1
+
+
+def classify_user_intent_signals(
+    user_message: str,
+    *,
+    article_task_active: bool,
+) -> UserIntentSignals:
+    """在调用模型前抽取用户消息中的写稿/修改/咨询意图信号。"""
     negated = bool(_RE_NEGATE_ARTICLE.search(user_message))
-    explicit_write = (not negated) and bool(_RE_EXPLICIT_WRITE.search(user_message))
+    explicit_write = (not negated) and _has_non_negated_explicit_write(user_message)
     explicit_revise = (not negated) and bool(_RE_EXPLICIT_REVISE.search(user_message))
     elliptical_revise = (
         (not negated)
@@ -568,11 +597,36 @@ def classify_turn_intent(
         and not elliptical_revise
         and bool(_RE_EXPLICIT_CONSULT.search(user_message))
     )
+    return UserIntentSignals(
+        negated=negated,
+        explicit_write=explicit_write,
+        explicit_revise=explicit_revise,
+        elliptical_revise=elliptical_revise,
+        explicit_consult=explicit_consult,
+    )
 
-    if explicit_write or explicit_revise or elliptical_revise:
+
+def classify_turn_intent(
+    user_message: str,
+    reply_text: str,
+    *,
+    has_citation: bool,
+    article_task_active: bool,
+    current_intent: str | None,
+) -> tuple[str | None, bool, bool]:
+    """判定本轮会话意图、文章任务续改状态及是否需执行文章身份检查。
+
+    返回 (new_intent, new_article_task_active, should_check_identity)。
+    """
+    signals = classify_user_intent_signals(
+        user_message,
+        article_task_active=article_task_active,
+    )
+
+    if signals.explicit_write or signals.explicit_revise or signals.elliptical_revise:
         return "article", True, True
 
-    if explicit_consult:
+    if signals.explicit_consult:
         return "consult", False, False
 
     # 无明确请求时，结合实际文章小节及上下文判断（单个"案例"不足以认定出稿）

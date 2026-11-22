@@ -21,6 +21,9 @@ class Turn:
     person_replacements: int = 0
     org_replacements: int = 0
     anonymize_blocked: bool = False
+    requested_article_count: int | None = None
+    target_article_count: int | None = None
+    article_count_action: str = "none"
 
 
 @dataclass

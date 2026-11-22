@@ -11,6 +11,7 @@ from typing import Protocol
 
 from ..citation.models import Citation
 from ..runtime.client import ModelClient
+from .article_count import validate_count_limits
 from .export import export_markdown
 from .orchestrator import process_turn
 from .session import Session, new_session
@@ -22,6 +23,9 @@ class SessionConfig:
     default_article_count: int = 3
     max_article_count: int = 10
     use_system_prompt: bool = True
+
+    def __post_init__(self) -> None:
+        validate_count_limits(self.default_article_count, self.max_article_count)
 
 
 @dataclass

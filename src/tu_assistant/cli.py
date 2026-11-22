@@ -1030,7 +1030,12 @@ def eval_run(
         model_name=_model_name(cfg, artifacts),
         artifacts_dir=artifacts,
         exp_id=exp,
-        session_config=SessionConfig(use_system_prompt=not no_system_prompt),
+        session_config=SessionConfig(
+            max_questions_per_turn=get(cfg, "session.max_questions_per_turn", 5),
+            default_article_count=get(cfg, "session.default_article_count", 3),
+            max_article_count=get(cfg, "session.max_article_count", 10),
+            use_system_prompt=not no_system_prompt,
+        ),
     )
     typer.echo(f"run_id={result['run_id']}  用例 {result['cases']} 条 → {result['dir']}")
     if result["gold_issues"]:

@@ -4,6 +4,9 @@
 让模型学会按配置值追问（FR-011）。
 
 E001 尝试 4：模板压缩到 ≤200 字（旧版 465 字），训练与运行时共用同一份。
+T056 对齐约束：不改动 v2-short 全局模板正文，避免扰动已训练模型与咨询基线；
+文章默认篇数与单次上限由 chat/article_count.py 与 chat/orchestrator.py
+在编排层做确定性校验并在未指定篇数时附加至当轮临时请求副本。
 """
 
 from __future__ import annotations

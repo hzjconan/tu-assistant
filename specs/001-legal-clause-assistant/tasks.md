@@ -155,8 +155,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
   - 2026-11-22 经内部 3 轮独立只读复审通过并经用户确认验收。实现常见单姓人名与五类单位字面全称抽取、意图与续改状态判定、稳定虚构代称分配与一次扫描替换、`verify_output` 核准区间追踪与引文冲突暂缓交稿、以及 `Reply.citations` 安全元数据清洗；本机父模型实测 `run-20261122-090101` SC-011 达 2/2、引用冲突 0 轮，新增学习文档 `[L6.3]`。[执行单与复审记录](../../docs/handoffs/T054-article-identity-handoff.md)
 - [x] T055 [P] [US2] 单元测试 `tests/unit/test_anonymize.py`：真实名称被替换、虚构名称不受影响
   - 2026-11-22 经内部 3 轮独立只读复审通过并经用户确认验收，全量 `uv run pytest` 282 passed / 6 xfailed（含 68 题 69 条负对照、T075 三条彩排提示、粘连/核准冲突/未核准引语、入口与导出隔离及 R1/R2 回归用例），`ruff` 全绿。
-- [ ] T056 [US2] 在 `src/tu_assistant/chat/orchestrator.py` 中接入文章数量（默认 3，上限 10，读取 `SessionConfig`）与身份信息检查（依赖 T054）
-  - 进度（2026-11-22）：身份信息检查接线（含 `orchestrator.py`、`assistant.py`、`session.py`、`eval/runner.py` 与 `eval/metrics.py` 适配）已随 T054/T055 完成并验收；文章数量控制待办。
+- [x] T056 [US2] 在 `src/tu_assistant/chat/orchestrator.py` 中接入文章数量（默认 3，上限 10，读取 `SessionConfig`）与身份信息检查（依赖 T054）
+  - 2026-11-22 经内部 3 轮独立只读复审通过并经用户确认验收（身份信息检查接线此前已随 T054/T055 完成）。落地 `src/tu_assistant/chat/article_count.py` 配置 fail-fast 校验、前置意图共享、防序数/过去时/案情干扰的数量与区间解析、超限/非正数硬拒（与 SC-008 隔离）及 `use_default` 临时请求副本轻量附注（`v2-short` 正文与咨询/明示篇数/路线 A 零改动），补齐 `tu eval run` 透传 `session.*` 配置；新增 `tests/unit/test_article_count.py`（106 passed，全量 `uv run pytest` 388 passed / 6 xfailed，`ruff` 全绿）及学习文档 `docs/learning/07-serving-demo.md`（`[L7.1]`）。[执行单与复审记录](../../docs/handoffs/T056-article-count-handoff.md)
 - [x] T057 [US2] 将 T052、T053 样本加入 `tu synth sft`，重新生成数据集
   - 2026-11-20 经内部 2 轮独立只读复审与外部模型复审通过，用户确认完成。产出固化文章池 `artifacts/synth/articles/t057-curated/`（22 初稿 + 24 修改稿 = 46 条，22 家族，6 部法规均衡覆盖，token 520–1,804）与新数据集 `artifacts/datasets/ds-kb-20261119-045641-8247/`（`train 8,962` / `valid 820`，`article` 252 = 2.81%，`refusal` 176 = 1.96%，新 KB 67/67 关系全部保留，`valid ∩ ds-8410 train = 0`，家族零泄漏，74 条 v1 评测去重零重合，全库 max 2,015 ≤ 2,048 token），同步更新 `docs/learning/04-training-data.md`（`[L4.5.3]` / `L4.7`）与 `00-glossary.md`。[执行单与验收记录](../../docs/handoffs/T057-article-dataset-handoff.md)
 - [x] T058 [US2] 编写评测集 v1 的普法文章用例约 10 题（含评分要点 `rubric`），加入 `eval/cases/v1/`，由用户审阅确认；实现 SC-011（身份信息）自动检查于 `src/tu_assistant/eval/metrics.py`
