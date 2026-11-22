@@ -179,9 +179,11 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 **Independent Test**: 对同一模型重复评测，指标波动 ≤2 个百分点；两个版本可直接对比（spec US3、SC-015）
 
-- [ ] T061 [P] [US3] 在 `src/tu_assistant/eval/report.py` 中完善报告：全部指标与 POC 目标值对照（不作为验收条件）、引用准确率校验前 / 后两列、逐条失败用例清单；SC-009（文章正确性）、SC-010（文章多样性）从人工评审表格（T063）汇总
+- [x] T061 [P] [US3] 在 `src/tu_assistant/eval/report.py` 中完善报告：全部指标与 POC 目标值对照（不作为验收条件）、引用准确率校验前 / 后两列、逐条失败用例清单；SC-009（文章正确性）、SC-010（文章多样性）从人工评审表格（T063）汇总
+  - 2026-11-22 经内部 2 轮独立只读复审与第三方审核意见收口后，用户确认验收。落地 `src/tu_assistant/eval/report.py`（`summarize_run`、`extract_failures`、`extract_pending_articles`、`load_reviews`、`aggregate_reviews`、`render_report`、`render_run_report`）、`runner.py` 委托渲染、只读命令 `tu eval report <run_id> [--reviews] [--out]`（禁止写入已有历史 run 目录）及 `tests/unit/test_report.py`（全量 `uv run pytest` 408 passed / 6 xfailed，`ruff` 全绿，T075 `output.sha256` 25/25 OK），同步新增学习文档 `[L6.4]` 与术语表 `## 评测`。[执行单与复审记录](../../docs/handoffs/T061-T063-eval-report-review-handoff.md)
 - [ ] T062 [P] [US3] 实现 `tu eval compare <run_id>...` 于 `src/tu_assistant/eval/compare.py`：同一评测集与口径的版本对比，输出 `compare.md`（FR-035）
-- [ ] T063 [P] [US3] 提供人工评审表格模板 `eval/review-template.csv`（列：`run_id`、`case_id`、`reviewer`、`verdict`（pass / minor_issue / fail）、`comment`、`created_at`），并在 `report.md` 中按 `case_id` 列出待评审的普法文章（FR-037，POC 用表格记录）
+- [x] T063 [P] [US3] 提供人工评审表格模板 `eval/review-template.csv`（列：`run_id`、`case_id`、`reviewer`、`verdict`（pass / minor_issue / fail）、`comment`、`created_at`），并在 `report.md` 中按 `case_id` 列出待评审的普法文章（FR-037，POC 用表格记录）
+  - 2026-11-22 随 T061 一并验收完成。提供 `eval/review-template.csv`（6 个必需列 + 第 7 可选列 `dimension=correctness|diversity|other`，向下兼容纯 6 列且留空默认归 `correctness`；POC 按 `题 × 评审人` 记录统计 SC-009/SC-010），并在 `report.md` 按 `case_id` 升序列出待评审普法文章与实得 0 篇状态。[执行单与复审记录](../../docs/handoffs/T061-T063-eval-report-review-handoff.md)
 - [ ] T064 [US3] 对 7B 演示模型重复评测 2 次，用 `tu eval compare` 验证指标波动 ≤2 个百分点（SC-015），结果存于 `artifacts/eval/`
 - [x] T076 [P] [US3] 实现 SC-016 判定（`src/tu_assistant/eval/compare.py`，可由 `tu eval compare` 调用）：输入基座与自训模型在同一评测集上的两个 run，输出三项条件的命中数与 Fisher 精确检验 p 值；口径沿用 `scripts/experiments/e002/review_stats.py` 与 `scripts/experiments/e003/sc016.py`（宽松解析定位到条/文件、严格解析定位到款）；补单元测试
   - 2026-11-18 独立复审通过。`uv run tu eval compare --sc016 run-20261117-022645 run-20261117-081504` 复现条级 1/60 → 17/60、款级 9/60、文件子集 0/30 → 21/30，退出 0。详见[执行单第 11 节](../../docs/handoffs/T076-sc016-handoff.md#11-最终复审通过2026-11-18)。

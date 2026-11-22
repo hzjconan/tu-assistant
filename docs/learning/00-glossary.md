@@ -88,3 +88,10 @@
 | uv | Python 环境与依赖管理工具 | [L2.11](./02-hardware.md#l211-环境搭建与踩过的坑) |
 | Hugging Face / hf-mirror | 模型下载平台及其国内镜像 | [L2.11](./02-hardware.md#l211-环境搭建与踩过的坑) |
 | 确定性护栏（Guardrail） | 在模型调用前后用确定性代码守住不可出错的硬边界（如条款原文校验、身份脱敏、篇数上限拦截），不把底线交给概率性输出 | [L7.1](./07-serving-demo.md#l71-对话编排层的确定性护栏文章数量控制如何与微调模型协作) |
+
+## 评测
+
+| 术语 | 解释 | 详见 |
+|---|---|---|
+| 校验前 / 校验后引用准确率 | SC-007 的两列指标：校验前（`ok / all`）衡量模型自身背诵准确度，校验后（`(ok+corrected) / all`）衡量加出处校验层后的交付底线 | [L6.4](./06-evaluation.md#l64-评测报告怎么读校验前后准确率incomplete-陷阱与人工评审闭环) |
+| 人工评审表（ReviewComment） | 按 `eval/review-template.csv` 记录普法文章人工评审结论的 CSV（含 `verdict` 三态与可选 `dimension` 维度），用于事后汇总 SC-009 与 SC-010 | [L6.4](./06-evaluation.md#l64-评测报告怎么读校验前后准确率incomplete-陷阱与人工评审闭环) |

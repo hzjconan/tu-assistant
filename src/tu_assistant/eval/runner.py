@@ -24,6 +24,7 @@ from .metrics import (
     multi_violation_score,
     score_case_output,
 )
+from .report import _expected_refusal, render_report
 
 
 def _run_case(
@@ -71,144 +72,9 @@ def _run_case(
     }
 
 
-def _expected_refusal(category: str, gold: dict) -> bool:
-    if category in {"refusal", "false_refusal"}:
-        return gold.get("should_refuse", category == "refusal")
-    return gold.get("should_refuse") is True
-
-
 def _render_report(run_id: str, exp_id: str | None, results: list[dict]) -> str:
-    """按类别聚合各指标，生成 markdown 报告。"""
-
-    def _mean(vals: list) -> float | None:
-        vals = [v for v in vals if v is not None]
-        return sum(vals) / len(vals) if vals else None
-
-    def _fmt(v: float | None) -> str:
-        return f"{v:.3f}" if v is not None else "-"
-
-    acc = {"ok": 0, "corrected": 0, "not_found": 0, "incomplete": 0}
-    for r in results:
-        for k, v in r["scores"]["citation_acc"]["counts"].items():
-            acc[k] += v
-    acc_total = sum(acc.values())
-    pre = acc["ok"] / acc_total if acc_total else None
-    post = (acc["ok"] + acc["corrected"]) / acc_total if acc_total else None
-
-    def _cat_mean(key: str) -> float | None:
-        return _mean(
-            [r["scores"].get(key) for r in results if key in r["scores"]]
-        )
-
-    outside = []
-    regular = []
-    special = []
-    for r in results:
-        refused = r["scores"]["refusal_evidence"]["refused"]
-        if _expected_refusal(r["category"], r["gold"]):
-            outside.append(refused)
-        elif r["category"] == "false_refusal":
-            special.append(refused)
-        else:
-            regular.append(refused)
-
-    def _refusal_rate(refused: list[bool], *, count_only: bool = False) -> str:
-        if not refused:
-            return "无样本（0/0）"
-        n = sum(refused)
-        if count_only:
-            return f"{n}/{len(refused)}"
-        return f"{n / len(refused):.3f}（{n}/{len(refused)}）"
-
-    # SC-011：有身份标注的文章题，按篇累计未泄露 / 可评；
-    # "覆盖"区分有标注的题和实际有可评文章的题，让分母可还原
-    id_pass = id_total = id_cases = id_eval_cases = 0
-    unparsed_rounds = 0
-    for r in results:
-        ic = r["scores"].get("identity_check") or {}
-        if "passed" in ic:
-            id_cases += 1
-            unparsed_rounds += len(ic.get("unparsed_leaks", []))
-            if ic["total"]:
-                id_eval_cases += 1
-                id_pass += ic["passed"]
-                id_total += ic["total"]
-    ac_ok = ac_n = 0
-    for r in results:
-        ac = r["scores"].get("article_count") or {}
-        if "ok" in ac:
-            ac_n += 1
-            ac_ok += 1 if ac["ok"] else 0
-
-    blocked_turns: list[tuple[str, int]] = []
-    for r in results:
-        for idx, t in enumerate(r.get("turns", []), 1):
-            if (t.get("anonymize") or {}).get("blocked"):
-                blocked_turns.append((r["case_id"], idx))
-
-    def _blocked_summary() -> str:
-        if not blocked_turns:
-            return "0 轮"
-        detail = "、".join(f"{cid} 第{tn}轮" for cid, tn in blocked_turns)
-        return f"{len(blocked_turns)} 轮（{detail}）"
-
-    def _sc011() -> str:
-        if not id_cases:
-            return "-（无身份标注题）"
-        cov = f"标注 {id_cases} 题，其中 {id_eval_cases} 题有可评文章"
-        if unparsed_rounds:
-            cov += f"，另有 {unparsed_rounds} 轮未识别出文章结构但含保护名称"
-        if not id_total:
-            return f"-（{cov}）"
-        return f"{id_pass}/{id_total}（{cov}）"
-
-    lines = [
-        f"# 评测报告 {run_id}",
-        "",
-        f"- 实验：{exp_id or '-'}",
-        f"- 用例数：{len(results)}",
-        "",
-        "## 总体指标",
-        "",
-        "| 指标 | 值 | 口径 |",
-        "|---|---|---|",
-        f"| 条款召回率 | {_fmt(_cat_mean('recall'))} | SC-002 |",
-        f"| 条款精确率 | {_fmt(_cat_mean('precision'))} | SC-003 |",
-        f"| 引用准确率（校验前） | {_fmt(pre)} | ok / 全部引用 |",
-        f"| 引用准确率（校验后） | {_fmt(post)} | (ok+corrected) / 全部引用 |",
-        f"| 关联条款完整率 | {_fmt(_cat_mean('relation_completion'))} | SC-005 |",
-        f"| 拒答初筛 | 范围外正确拒答 {_refusal_rate(outside)}；"
-        f"范围内误拒 {_refusal_rate(regular + special)}，"
-        f"常规题 {_refusal_rate(regular, count_only=True)}，"
-        f"专设误拒题 {_refusal_rate(special, count_only=True)} "
-        "| SC-008（自动初筛，依据见 results.jsonl 的 refusal_evidence） |",
-        f"| 多违规识别率 | {_fmt(_cat_mean('multi_violation'))} | SC-004 |",
-        f"| 意图确认 | {_fmt(_cat_mean('intent'))} | SC-001 |",
-        f"| 文章身份检查 | {_sc011()} | SC-011 |",
-        f"| 引用冲突暂缓交稿 | {_blocked_summary()} | T054（零交稿不计入 SC-011） |",
-        (
-            f"| 文章篇数符合 | {ac_ok}/{ac_n} 题 | FR-028 |"
-            if ac_n
-            else "| 文章篇数符合 | - | FR-028 |"
-        ),
-        "",
-        "## 引用判定分布",
-        "",
-        f"ok={acc['ok']}  corrected={acc['corrected']}  "
-        f"not_found={acc['not_found']}  incomplete={acc['incomplete']}",
-        "",
-        "## 按类别",
-        "",
-        "| 类别 | 用例数 |",
-        "|---|---|",
-    ]
-    cats: dict[str, int] = {}
-    for r in results:
-        cats[r["category"]] = cats.get(r["category"], 0) + 1
-    for c, n in sorted(cats.items()):
-        lines.append(f"| {c} | {n} |")
-    lines += ["", "逐条结果见 results.jsonl。", ""]
-    return "\n".join(lines)
+    """兼容封装：委托给 `eval.report.render_report`。"""
+    return render_report(run_id, exp_id, results)
 
 
 def run_eval(
@@ -297,7 +163,14 @@ def run_eval(
             f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
 
     (out_dir / "report.md").write_text(
-        _render_report(run_id, exp_id, results), encoding="utf-8"
+        render_report(
+            run_id,
+            exp_id,
+            results,
+            kb_version=Path(kb_path).stem,
+            cases_path=str(cases_path),
+        ),
+        encoding="utf-8",
     )
 
     # E002：从 current.json 记录本次服务的 exp 与基座模型，便于追溯测的是哪个 adapter

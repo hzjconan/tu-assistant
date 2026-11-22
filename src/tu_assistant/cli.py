@@ -1045,6 +1045,61 @@ def eval_run(
         )
 
 
+@eval_app.command("report")
+def eval_report(
+    run_id: str = typer.Argument(..., help="评测 run ID（artifacts/eval/<run_id>）"),
+    reviews: str | None = typer.Option(
+        None,
+        "--reviews",
+        help="人工评审 CSV 路径（格式见 eval/review-template.csv）",
+    ),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="输出 Markdown 路径（不传则输出到 stdout；禁止覆盖已有 run 目录下的 report.md）",
+    ),
+    artifacts: str = typer.Option("artifacts", help="产物目录"),
+) -> None:
+    """只读读取已有评测 run 生成完整报告（可汇总人工评审 CSV，不覆盖历史产物）。"""
+    from .eval.report import ReportError, render_run_report
+
+    if out is not None:
+        out_path = Path(out).resolve()
+        eval_root = (Path(artifacts) / "eval").resolve()
+        in_existing_run_dir = (
+            eval_root in out_path.parents
+            and any(
+                parent.parent == eval_root and parent.exists()
+                for parent in out_path.parents
+            )
+        )
+        if in_existing_run_dir:
+            typer.secho(
+                f"拒绝写入已有历史评测目录：{out_path}（请指定外部输出路径或不传 --out）",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(2)
+
+    try:
+        report_md = render_run_report(artifacts, run_id, reviews_path=reviews)
+    except ReportError as e:
+        typer.secho(f"报告生成失败：{e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+
+    if out is None:
+        typer.echo(report_md, nl=False)
+    else:
+        target = Path(out)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(report_md, encoding="utf-8")
+        except OSError as e:
+            typer.secho(f"写入报告失败（{target}）：{e}", fg="red", err=True)
+            raise typer.Exit(2) from e
+        typer.echo(f"已写入报告 → {target}")
+
+
 @eval_app.command("compare")
 def eval_compare(
     runs: Annotated[list[str], typer.Argument(help="两个 run ID：<基座> <自训>")],
