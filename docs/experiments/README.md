@@ -11,3 +11,4 @@
 | [E002](./E002-eval-served-base-model.md)（[执行记录](./E002-run-log.md)） | 评测误测基座的根因、修复与重评；§6 复审 | 已完成 |
 | [E003](./E003-memorization-vs-exposure.md)（[执行记录](./E003-run-log.md)） | 曝光不足还是容量不足：原题记忆测试、追加训练 | 已收尾 |
 | [POC 训练收尾](./poc-training-summary.md) | POC 训练目标判定、POC 下一步、正式阶段的判断 | 待审阅 |
+| [T064 重复评测（SC-015）](./T064-eval-repeatability.md) | 7B 演示模型两轮独立冷启动 98 题评测、DeepSeek 初审 + 人工终审与 SC-015 判定（`0.0 pp` PASS） | 已完成 |

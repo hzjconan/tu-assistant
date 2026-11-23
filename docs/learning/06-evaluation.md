@@ -202,3 +202,37 @@ uv run tu eval report <run_id> --reviews <评审表.csv>
 - 配合 T062 的子集对齐规则（`run.rows ⊆ chk.case_ids`），历史 70 题目录型评测仍可正常对比，而后续 T064 跑 7B 重复评测时一次就能产出覆盖 SC-001 ~ SC-011 全指标的完整报告。
 
 实现：`eval/cases/v1/{multi_violation,intent,boundaries}.jsonl`、`src/tu_assistant/cli.py`（`tu eval cases review / promote` 增强）、`tests/unit/test_v1_multi_intent_eval.py`（T049）。
+
+---
+
+## [L6.7] 重复评测、确定性边界与“AI 初审 + 人工终判”闭环
+
+> **本节解决什么问题**：为什么已经把 `temperature` 设成 `0`，还是要对同一个模型完整跑两遍评测来验证 SC-015（指标波动 `≤ 2.0 pp`）？当评测集里既有自动指标又有需要人读文章的 `SC-009 / SC-010` 时，怎样用外部大模型帮忙初审而不踩合规和统计坑？
+
+### 1. `temperature=0` 不等于工程上天然零波动
+
+评测阶段使用**贪婪解码（`temperature=0`）**：每一步只选概率最高的那一个 token，从数学公式看是完全确定的。但在真实本地推理链路里，仍存在两类常见的非确定性来源：
+
+- **硬件与底层算子**：GPU（本机为 Apple Silicon Metal）并行浮点归约在极端平票或不同调度时序下可能出现微小舍入差，一旦某个 token 翻盘，后续整段文本就会分叉；
+- **服务端前缀缓存（Prompt Cache）**：`mlx_lm.server` 进程内维护 `LRUPromptCache`，连续跑两轮时第 1 轮冷启动、第 2 轮命中缓存，KV Cache 的计算路径并不完全对称。
+
+因此，T064 在两轮评测之间**优雅停服并重新冷启动 `tu serve model`**，且各自重跑 `ab.py 0` 路由冒烟，把隐藏状态彻底归零后再实测 SC-015。
+
+### 2. 把“测量尺子稳不稳”与“模型考得高不高”分开看
+
+T064 在冻结 7B 演示模型 `exp-20261116-resume500`、活跃 KB `kb-20261119-045641` 与完整 98 题（全 7 类 / 116 轮）上跑完两轮独立冷启动（`run-20261123-051432` 与 `run-20261123-053832`）：
+
+- **测量工具极其稳定（SC-015 PASS）**：单轮墙钟耗时约 **21 分钟**（21 分 06 秒 / 20 分 56 秒），98/98 题 `final_raw` 与各轮交付稿 **100% 逐字一致**，12 项有效指标（含人工终审 `SC-009`）最大波动均为 **`0.0 pp`**（远低于 `≤ 2.0 pp` 阈值）；
+- **POC 能力基线如实暴露**：例如 `SC-001` 意图确认率 `0.900 (9/10)`、`SC-006` 出处标注完整率 `0.919`、`SC-007` 已定位子集经校验层纠偏后从 `0.589` 升至 `0.973`、`SC-011` 身份无泄露 `1.000 (2/2)`；而 `SC-002` 条款召回 `0.121`、`SC-004` 多违法行为 `0.150`、`SC-009` 普法文章正确性 `0.000 (0/9)` 则清晰标出当前无检索纯 SFT（且未合入文章权重）的能力短板。
+
+尺子稳了，后续换模型或上 RAG 时，哪怕只有 3–5 个百分点的提升，我们也能确信那是真实改进而不是随机噪声。
+
+### 3. “AI 初审 + 人工终判”的三条工程边界
+
+普法文章（`SC-009` 正确性、`SC-010` 实质重复率）无法靠纯正则判质量。T064 实践了“离线 DeepSeek 初审草稿 → 人工逐题复核终判”的流程，落地时必须守住三条边界：
+
+1. **离线评测打分与线上运行物理隔离（宪章 III/IV）**：外部模型脚本放在 `scripts/experiments/t064/deepseek_review_articles.py`，复用到 `synth/llm.py`（`input_source="eval_case"`），**绝不侵入 `src/tu_assistant/{chat,runtime,ui,eval}/`**，只发虚构评测题、`rubric` 与本地模型交付稿，零接触 `inputs/` 与真实用户对话。
+2. **AI 草稿与人类终判双文件隔离**：`report.py` 会把同一维度下不同 `reviewer` 的行全部计入分母；若把 `deepseek-chat-draft` 和 `user` 混在同一个 `--reviews` CSV 中，会导致双重计数。本任务把 AI 草稿留在 `artifacts/logs/t064/reviews-deepseek-draft.csv`，人工复核并纠偏（如修正 `article-009` 第 1 轮咨询轮误报泄露）后再单独写入 `eval/reviews/t064-reviews.csv`（仅含 `reviewer="user"`），且两轮 `run_id` 均覆盖（避免 `--sc015` 触发单侧 `None` 判 `FAIL`）。
+3. **实得 `< 2` 篇不硬填 `diversity`**：`SC-010` 衡量的是“同一次生成的多篇文章是否实质重复”。本次 5 道多篇题在自动拆篇下实得均为 `0` 篇，若强行填 `fail` 会把“未出稿/拒答”误报成“100% 实质重复”，强行填 `pass` 又会误报成“0% 重复”；只在实得 `≥ 2` 篇时评判 `diversity`，未达 2 篇留空跳过，才能保证指标语义不失真。
+
+实现：`scripts/experiments/t064/deepseek_review_articles.py`、`eval/reviews/t064-reviews.csv`、`docs/experiments/T064-eval-repeatability.md`（T064）。
