@@ -1045,6 +1045,16 @@ def eval_run(
         )
 
 
+def _is_in_existing_eval_subdir(out: str | Path, artifacts: str | Path) -> bool:
+    out_path = Path(out).resolve()
+    eval_root = (Path(artifacts) / "eval").resolve()
+    if out_path.parent == eval_root and out_path.exists():
+        return True
+    return eval_root in out_path.parents and any(
+        parent.parent == eval_root and parent.exists() for parent in out_path.parents
+    )
+
+
 @eval_app.command("report")
 def eval_report(
     run_id: str = typer.Argument(..., help="评测 run ID（artifacts/eval/<run_id>）"),
@@ -1063,23 +1073,14 @@ def eval_report(
     """只读读取已有评测 run 生成完整报告（可汇总人工评审 CSV，不覆盖历史产物）。"""
     from .eval.report import ReportError, render_run_report
 
-    if out is not None:
+    if out is not None and _is_in_existing_eval_subdir(out, artifacts):
         out_path = Path(out).resolve()
-        eval_root = (Path(artifacts) / "eval").resolve()
-        in_existing_run_dir = (
-            eval_root in out_path.parents
-            and any(
-                parent.parent == eval_root and parent.exists()
-                for parent in out_path.parents
-            )
+        typer.secho(
+            f"拒绝写入已有历史评测目录：{out_path}（请指定外部输出路径或不传 --out）",
+            fg="red",
+            err=True,
         )
-        if in_existing_run_dir:
-            typer.secho(
-                f"拒绝写入已有历史评测目录：{out_path}（请指定外部输出路径或不传 --out）",
-                fg="red",
-                err=True,
-            )
-            raise typer.Exit(2)
+        raise typer.Exit(2)
 
     try:
         report_md = render_run_report(artifacts, run_id, reviews_path=reviews)
@@ -1102,77 +1103,183 @@ def eval_report(
 
 @eval_app.command("compare")
 def eval_compare(
-    runs: Annotated[list[str], typer.Argument(help="两个 run ID：<基座> <自训>")],
+    runs: Annotated[list[str], typer.Argument(help="两个及以上 run ID（首项为基准）")],
     sc016: bool = typer.Option(
         False, "--sc016", help="按 spec SC-016 判定（POC 验收/回归门槛）"
     ),
-    artifacts: str = typer.Option("artifacts"),
+    sc015: bool = typer.Option(
+        False, "--sc015", help="按 spec SC-015 判定同模型重复评测稳定性（波动 ≤ 2.0 pp）"
+    ),
+    reviews: str | None = typer.Option(
+        None, "--reviews", help="人工评审 CSV 路径（用于对比 SC-009 / SC-010）"
+    ),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="输出 compare.md 路径（不传则输出到 stdout；禁止写入已有 artifacts/eval 子目录）",
+    ),
+    save: bool = typer.Option(
+        False,
+        "--save",
+        help="落盘至独立目录 artifacts/eval/compare-<ts>/（含 compare.md 与 manifest.json）",
+    ),
+    artifacts: str = typer.Option("artifacts", help="产物目录"),
 ) -> None:
-    """对比两个评测 run；--sc016 输出 SC-016 判定（通用对比由 T062 实现）。"""
+    """对比多个评测 run（FR-035）；支持 --sc015 稳定性校验与 --sc016 POC 验收判定。"""
     from .eval.compare import (
         CompareError,
         align_cases,
+        align_general_cases,
+        check_general_comparable,
         comparability_issues,
+        compare_runs,
+        evaluate_sc015,
         load_doc_index,
         load_run,
+        render_compare_markdown,
         resolve_kb_path,
         role_issues,
+        same_system_issues,
+        save_compare_artifact,
     )
     from .eval.compare import (
         sc016 as run_sc016,
     )
 
-    if not sc016:
-        typer.echo("目前仅支持 --sc016；通用多 run 对比由 T062 实现", err=True)
+    if sc016 and sc015:
+        typer.echo("输入错误：--sc016 与 --sc015 不能同时使用", err=True)
         raise typer.Exit(2)
-    if len(runs) != 2:
-        typer.echo("--sc016 需要恰好两个 run ID：<基座> <自训>", err=True)
+    if sc016 and (out is not None or save or reviews is not None):
+        typer.echo("输入错误：--sc016 不支持与 --out / --save / --reviews 同时使用", err=True)
         raise typer.Exit(2)
+    if out is not None and save:
+        typer.echo("输入错误：--out 与 --save 不能同时使用", err=True)
+        raise typer.Exit(2)
+
+    if sc016:
+        if len(runs) != 2:
+            typer.echo("--sc016 需要恰好两个 run ID：<基座> <自训>", err=True)
+            raise typer.Exit(2)
+        try:
+            base, trained = load_run(artifacts, runs[0]), load_run(artifacts, runs[1])
+            issues = comparability_issues(base, trained) + role_issues(base, trained)
+            aligned = align_cases(base, trained)
+            docs = load_doc_index(resolve_kb_path(base.manifest, artifacts))
+            res = run_sc016(aligned, docs)
+        except CompareError as e:
+            typer.echo(f"输入错误：{e}", err=True)
+            raise typer.Exit(2) from e
+        if issues:
+            for i in issues:
+                typer.echo(f"无法确认：{i}", err=True)
+            typer.secho("总判定：无法判定（输入可比性无法确认）", fg="red", err=True)
+            raise typer.Exit(1)
+
+        bm = (base.manifest.get("config") or {}).get("model")
+        tm = (trained.manifest.get("config") or {}).get("model")
+        typer.echo(f"SC-016 判定（{res.n} 条 clause_id 用例）")
+        typer.echo(f"  基座 run：{base.run_id}（model={bm}）")
+        typer.echo(f"  自训 run：{trained.run_id}（model={tm}）")
+
+        def mark(ok: bool | None) -> str:
+            return "PASS" if ok else ("无法判定" if ok is None else "FAIL")
+
+        typer.echo(
+            f"  ① 条级命中：基座 {res.cond1_base}/{res.n}，自训 {res.cond1_trained}/{res.n}；"
+            f"Fisher 双侧 p={res.cond1_p:.3g} → {mark(res.cond1_ok)}"
+        )
+        typer.echo(
+            f"  ② 款/项级精确命中：{res.cond2_trained}/{res.n} = "
+            f"{res.cond2_ratio:.1%}（阈值 ≥10%）→ {mark(res.cond2_ok)}"
+        )
+        if res.cond3_ok is None:
+            typer.echo("  ③ 基座从未识别的文件子集为空 → 无法判定")
+        else:
+            typer.echo(
+                f"  ③ 基座从未识别的文件子集（{res.subset_n} 题）：文件命中 基座 "
+                f"{res.cond3_base}/{res.subset_n}，自训 {res.cond3_trained}/{res.subset_n}；"
+                f"p={res.cond3_p:.3g} → {mark(res.cond3_ok)}"
+            )
+        if res.passed:
+            typer.secho("总判定：PASS", fg="green")
+            raise typer.Exit(0)
+        typer.secho("总判定：FAIL", fg="red")
+        raise typer.Exit(1)
+
+    # 通用多 run 对比 / --sc015 重复评测稳定性校验（T062）
+    if len(runs) < 2:
+        typer.echo("输入错误：至少需要 2 个 run ID 进行对比", err=True)
+        raise typer.Exit(2)
+    if out is not None and _is_in_existing_eval_subdir(out, artifacts):
+        out_path = Path(out).resolve()
+        typer.secho(
+            f"拒绝写入已有历史评测目录：{out_path}（请指定外部输出路径或使用 --save）",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     try:
-        base, trained = load_run(artifacts, runs[0]), load_run(artifacts, runs[1])
-        issues = comparability_issues(base, trained) + role_issues(base, trained)
-        aligned = align_cases(base, trained)
-        docs = load_doc_index(resolve_kb_path(base.manifest, artifacts))
-        res = run_sc016(aligned, docs)
+        loaded = [load_run(artifacts, rid) for rid in runs]
+        issues, notes = check_general_comparable(loaded)
+        if sc015:
+            issues = issues + same_system_issues(loaded)
+        align_general_cases(loaded)
     except CompareError as e:
         typer.echo(f"输入错误：{e}", err=True)
         raise typer.Exit(2) from e
+
     if issues:
         for i in issues:
             typer.echo(f"无法确认：{i}", err=True)
-        typer.secho("总判定：无法判定（输入可比性无法确认）", fg="red", err=True)
+        msg = (
+            "总判定：无法判定（输入可比性或系统版本无法确认）"
+            if sc015
+            else "无法确认对比可比性（存在缺失字段或无法核对的评测集来源）"
+        )
+        typer.secho(msg, fg="red", err=True)
         raise typer.Exit(1)
 
-    bm = (base.manifest.get("config") or {}).get("model")
-    tm = (trained.manifest.get("config") or {}).get("model")
-    typer.echo(f"SC-016 判定（{res.n} 条 clause_id 用例）")
-    typer.echo(f"  基座 run：{base.run_id}（model={bm}）")
-    typer.echo(f"  自训 run：{trained.run_id}（model={tm}）")
+    try:
+        comparison = compare_runs(loaded, reviews_path=reviews, notes=notes)
+    except CompareError as e:
+        typer.echo(f"输入错误：{e}", err=True)
+        raise typer.Exit(2) from e
 
-    def mark(ok: bool | None) -> str:
-        return "PASS" if ok else ("无法判定" if ok is None else "FAIL")
+    sc015_res = evaluate_sc015(comparison) if sc015 else None
+    compare_md = render_compare_markdown(comparison, sc015_result=sc015_res)
 
-    typer.echo(
-        f"  ① 条级命中：基座 {res.cond1_base}/{res.n}，自训 {res.cond1_trained}/{res.n}；"
-        f"Fisher 双侧 p={res.cond1_p:.3g} → {mark(res.cond1_ok)}"
-    )
-    typer.echo(
-        f"  ② 款/项级精确命中：{res.cond2_trained}/{res.n} = "
-        f"{res.cond2_ratio:.1%}（阈值 ≥10%）→ {mark(res.cond2_ok)}"
-    )
-    if res.cond3_ok is None:
-        typer.echo("  ③ 基座从未识别的文件子集为空 → 无法判定")
+    if save:
+        try:
+            out_dir = save_compare_artifact(
+                artifacts, comparison, compare_md, sc015_result=sc015_res
+            )
+        except OSError as e:
+            typer.secho(f"保存对比报告失败：{e}", fg="red", err=True)
+            raise typer.Exit(2) from e
+        typer.echo(f"已保存对比报告 → {out_dir / 'compare.md'}")
+    elif out is not None:
+        target = Path(out)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(compare_md, encoding="utf-8")
+        except OSError as e:
+            typer.secho(f"写入对比报告失败（{target}）：{e}", fg="red", err=True)
+            raise typer.Exit(2) from e
+        typer.echo(f"已写入对比报告 → {target}")
     else:
-        typer.echo(
-            f"  ③ 基座从未识别的文件子集（{res.subset_n} 题）：文件命中 基座 "
-            f"{res.cond3_base}/{res.subset_n}，自训 {res.cond3_trained}/{res.subset_n}；"
-            f"p={res.cond3_p:.3g} → {mark(res.cond3_ok)}"
-        )
-    if res.passed:
-        typer.secho("总判定：PASS", fg="green")
-        raise typer.Exit(0)
-    typer.secho("总判定：FAIL", fg="red")
-    raise typer.Exit(1)
+        typer.echo(compare_md, nl=False)
+
+    if sc015_res is not None:
+        if sc015_res.passed is True:
+            if save or out is not None:
+                typer.secho("SC-015 总判定：PASS", fg="green")
+            raise typer.Exit(0)
+        if save or out is not None:
+            verdict = "无法判定（无有效指标）" if sc015_res.passed is None else "FAIL"
+            typer.secho(f"SC-015 总判定：{verdict}", fg="red")
+        raise typer.Exit(1)
+    raise typer.Exit(0)
 
 
 @app.command("chat")
