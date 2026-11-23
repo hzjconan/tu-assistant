@@ -191,7 +191,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
   - 2026-11-23 经内部 2 轮独立只读复审通过并经用户确认验收。冻结演示模型 `exp-20261116-resume500` 在活跃 KB `kb-20261119-045641` 与 98 题全 7 类 `eval/cases/v1` 上完成两次独立冷启动评测（`run-20261123-051432`［21 分 06 秒］、`run-20261123-053832`［20 分 56 秒］，98/98 题逐字一致），经离线 DeepSeek 初审脚本（`scripts/experiments/t064/deepseek_review_articles.py`）+ 用户人工终审落盘 `eval/reviews/t064-reviews.csv`，最终 `tu eval compare --sc015 --reviews --save` 归档于 `artifacts/eval/compare-20261123-145054/`（12 项有效指标含 `SC-009=0.000 (0/9)` 均 `0.0 pp` PASS，`SC-010` 因多篇实得 `<2` 篇跳过）；同步沉淀实验记录 `docs/experiments/T064-eval-repeatability.md` 与学习文档 `[L6.7]` / 术语表。[执行单与复审记录](../../docs/handoffs/T064-eval-repeatability-handoff.md)
 - [x] T076 [P] [US3] 实现 SC-016 判定（`src/tu_assistant/eval/compare.py`，可由 `tu eval compare` 调用）：输入基座与自训模型在同一评测集上的两个 run，输出三项条件的命中数与 Fisher 精确检验 p 值；口径沿用 `scripts/experiments/e002/review_stats.py` 与 `scripts/experiments/e003/sc016.py`（宽松解析定位到条/文件、严格解析定位到款）；补单元测试
   - 2026-11-18 独立复审通过。`uv run tu eval compare --sc016 run-20261117-022645 run-20261117-081504` 复现条级 1/60 → 17/60、款级 9/60、文件子集 0/30 → 21/30，退出 0。详见[执行单第 11 节](../../docs/handoffs/T076-sc016-handoff.md#11-最终复审通过2026-11-18)。
-- [ ] T065 [US3] 撰写 `docs/learning/06-evaluation.md`：各指标计算方法、校验前 / 后两种准确率的含义、用本项目评测结果分析薄弱类别并反推数据改进方向；更新术语表
+- [x] T065 [US3] 撰写 `docs/learning/06-evaluation.md`：各指标计算方法、校验前 / 后两种准确率的含义、用本项目评测结果分析薄弱类别并反推数据改进方向；更新术语表
+  - 2026-11-23 经内部独立只读复审、外部两轮复审修订及 `reviewer-v3` 终审通过并获用户确认验收，Phase 5（US3）全部任务收口。完成 `docs/learning/06-evaluation.md`（章首导航、`[L6.1]`–`[L6.7]` 口径刷新与锚点保留、新增 `[L6.8]` 全指标口径与 4 处源码边界、`[L6.9]` T064 全 7 类 98 题实测诊断与数据改进反推、`[L6.10]` 延展提问），同步更新 `docs/learning/00-glossary.md`（保留原 8 条并增补 5 条）与 `docs/learning/README.md`（第 6 章标为 `✅`）；本地辅助校验 `verify_t065.py`（108 链接 0 断链、44 项正文数字回查）全通过，`uv run pytest` 421 passed / 6 xfailed，`ruff` 全绿，T075 `output.sha256` 25/25 OK。[执行单与复审记录](../../docs/handoffs/T065-eval-learning-handoff.md)
 
 **Checkpoint**: 评测报告完整、可对比、可复现
 
