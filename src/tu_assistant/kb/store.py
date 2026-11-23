@@ -376,22 +376,31 @@ def resolve_kb_path(
     return p
 
 
-def open_kb(path: str | Path, *, read_only: bool = False) -> sqlite3.Connection:
+def open_kb(
+    path: str | Path,
+    *,
+    read_only: bool = False,
+    check_same_thread: bool = True,
+) -> sqlite3.Connection:
     """打开已存在的 SQLite 知识库文件（或 :memory:）。
 
     文件不存在时抛 KBError，防止 sqlite3.connect 静默创建 0 字节空库。
     """
     if str(path) == ":memory:":
-        return sqlite3.connect(":memory:")
+        return sqlite3.connect(":memory:", check_same_thread=check_same_thread)
     p = Path(path)
     if not p.is_file():
         raise KBError(f"知识库文件不存在：{p}")
     if read_only:
         try:
-            return sqlite3.connect(f"{p.resolve().as_uri()}?mode=ro", uri=True)
+            return sqlite3.connect(
+                f"{p.resolve().as_uri()}?mode=ro",
+                uri=True,
+                check_same_thread=check_same_thread,
+            )
         except sqlite3.Error as e:
             raise KBError(f"无法只读打开知识库 {p}：{e}") from e
-    return sqlite3.connect(p)
+    return sqlite3.connect(p, check_same_thread=check_same_thread)
 
 
 def open_kb_from_config(
@@ -401,6 +410,7 @@ def open_kb_from_config(
     artifacts_dir: str | Path | None = None,
     overrides: dict[str, Any] | None = None,
     read_only: bool = True,
+    check_same_thread: bool = True,
 ) -> tuple[sqlite3.Connection, Path]:
     """按配置文件（及可选覆盖项）解析并打开指定版本的知识库，返回 (conn, kb_path)。"""
     cfg = load_app_config(config_path, overrides=overrides)
@@ -409,5 +419,5 @@ def open_kb_from_config(
         config=cfg,
         artifacts_dir=artifacts_dir,
     )
-    conn = open_kb(kb_path, read_only=read_only)
+    conn = open_kb(kb_path, read_only=read_only, check_same_thread=check_same_thread)
     return conn, kb_path

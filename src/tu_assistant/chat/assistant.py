@@ -109,6 +109,7 @@ class TrainedAssistant:
         overrides: dict[str, Any] | None = None,
         eval_mode: bool = False,
         temperature: float = 0.7,
+        check_same_thread: bool = True,
     ) -> TrainedAssistant:
         """按配置文件（configs/app.yaml）加载指定知识库版本并初始化 TrainedAssistant。"""
         cfg = load_app_config(config_path, overrides=overrides)
@@ -118,7 +119,7 @@ class TrainedAssistant:
             config=cfg,
             artifacts_dir=eff_artifacts,
         )
-        conn = open_kb(kb_path, read_only=True)
+        conn = open_kb(kb_path, read_only=True, check_same_thread=check_same_thread)
         try:
             if client is None:
                 model_name = resolve_model_name(cfg, eff_artifacts)

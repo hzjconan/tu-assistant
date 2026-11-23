@@ -1373,5 +1373,90 @@ def chat(
         close_cb()
 
 
+@app.command("ui")
+def ui(
+    config: str = typer.Option("configs/app.yaml", help="应用配置文件路径"),
+    artifacts: str | None = typer.Option(
+        None, help="产物目录（默认取 app.yaml 的 paths.artifacts 或 artifacts）"
+    ),
+    kb_version: str | None = typer.Option(
+        None, help="知识库版本（覆盖 app.yaml 的 kb.version）"
+    ),
+    host: str = typer.Option("127.0.0.1", help="监听地址（仅允许 127.0.0.1）"),
+    port: int = typer.Option(7860, help="监听端口（1–65535，默认 7860）"),
+    temperature: float = typer.Option(0.7, help="生成温度（>= 0.0）"),
+    inbrowser: bool = typer.Option(
+        False, "--inbrowser/--no-inbrowser", help="启动后是否自动打开浏览器"
+    ),
+) -> None:
+    """启动本地 Gradio 演示界面（仅监听 127.0.0.1，严禁公网共享）。"""
+    import math
+
+    import yaml
+
+    from .chat.assistant import TrainedAssistant, session_config_from
+    from .config import get, load_app_config
+    from .kb.store import KBError
+    from .runtime.client import EndpointNotAllowedError
+    from .ui.app import ChatUIController, create_ui_app, launch_ui, validate_ui_host
+
+    try:
+        safe_host = validate_ui_host(host)
+    except ValueError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+
+    if not (1 <= port <= 65535):
+        typer.secho(f"非法端口：{port}（须在 1–65535 之间）", fg="red", err=True)
+        raise typer.Exit(2)
+    if not math.isfinite(temperature) or temperature < 0.0:
+        typer.secho(f"非法生成温度：{temperature}（须为 >= 0.0 的有限数）", fg="red", err=True)
+        raise typer.Exit(2)
+
+    try:
+        cfg = load_app_config(config)
+        scfg = session_config_from(cfg)
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        typer.secho(f"配置加载失败：{e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+
+    try:
+        assistant = TrainedAssistant.from_config(
+            config,
+            kb_version=kb_version,
+            artifacts_dir=artifacts,
+            temperature=temperature,
+            check_same_thread=False,
+        )
+    except (KBError, EndpointNotAllowedError) as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+
+    controller: ChatUIController | None = None
+    try:
+        endpoint = str(get(cfg, "runtime.model_endpoint", "http://127.0.0.1:8080/v1"))
+        controller = ChatUIController(
+            assistant,
+            scfg,
+            kb_version=assistant.kb_version,
+            model_endpoint=endpoint,
+        )
+        demo = create_ui_app(controller)
+        typer.echo(
+            f"启动本地演示界面：http://{safe_host}:{port}  "
+            f"知识库：{assistant.kb_version}  模型端点：{endpoint}"
+        )
+        launch_ui(
+            demo,
+            host=safe_host,
+            port=port,
+            inbrowser=inbrowser,
+        )
+    finally:
+        if controller is not None:
+            controller.cleanup_all()
+        assistant.close_kb()
+
+
 if __name__ == "__main__":
     app()

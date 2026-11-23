@@ -1,6 +1,6 @@
 # 07 推理与演示：模型服务、对话编排与演示界面
 
-> 本章伴随 Phase 4 收口与 Phase 7 实施逐步补全（完整章节由 T073 整理）。当前已写入 `[L7.1]`。
+> 本章伴随 Phase 4 收口与 Phase 7 实施逐步补全（完整章节由 T073 整理）。当前已写入 `[L7.1]`、`[L7.2]`。
 
 ---
 
@@ -43,7 +43,47 @@
 
 ---
 
+## [L7.2] 本地演示界面的工程边界：Gradio 6 状态隔离、SQLite 跨线程约束与本地隐私护栏
+
+把命令行里跑通的 `tu chat` 包装成浏览器里可演示的 `tu ui`（T069），看起来只是套一层网页壳，但真落地时会立刻遇到 4 个从单线程 CLI 切到多线程 Web 界面特有的工程边界。
+
+### 1. 为什么 UI 只通过 `Assistant` 协议交互？
+
+`src/tu_assistant/ui/app.py` 中的 `ChatUIController` 只依赖 `Assistant` 协议（`new_session` / `send` / `export_markdown` / `close`），完全不接触 `ModelClient`、SQLite 连接或 Gradio 组件类型：
+- **复用全部护栏**：网页端天然共享出处校验、关联条款补全、篇数上限拦截、文章身份信息脱敏与免责声明，不重复写业务规则；
+- **可独立单测**：控制器可以直接用轻量 Stub 跑毫秒级确定性单元测试，不需要每次起浏览器或 7B 模型；
+- **面向正式阶段零改动替换**：后续如果引入检索对照组 `RetrievalAssistant`，只要实现同一协议，`tu ui` 无需改动一行交互代码。
+
+### 2. Gradio 6 的线程模型与 SQLite `check_same_thread` 踩坑
+
+命令行 `tu chat` 从头到尾在同一个主线程运行，所以 `sqlite3.connect(...)` 默认的 `check_same_thread=True` 不会报错。但 Gradio 基于 FastAPI/AnyIO 线程池分发网页回调：
+- 知识库连接在 `tu ui` 启动时的**主线程**打开，用户发消息时的回调却跑在**工作线程**中；如果不放开线程检查，发出第一条消息就会立刻抛出 `sqlite3.ProgrammingError`；
+- 本机 SQLite 为 `SERIALIZED` 线程安全模式（`sqlite3.threadsafety == 3`），且运行时知识库以只读 URI（`mode=ro`）打开，无写竞争；我们在 `open_kb` / `TrainedAssistant.from_config` 增加默认仍为 `True` 的可选参数 `check_same_thread`，仅在 `tu ui` 传 `False`，并叠加 `ChatUIController` 互斥锁与 `demo.queue(default_concurrency_limit=1)` 单并发队列，彻底避免跨线程报错和本机 M1 Pro 单推理服务并发争抢。
+- 另外，Gradio 6.31.0 中 `gr.Chatbot` 传回 Python 回调时会把字符串包装成多模态块列表，因此不应把 `Chatbot` 当状态源读回解析，而应由独立 `gr.State` 维护纯文本历史、单向输出给 `Chatbot`。
+
+### 3. 会话“只存内存”在 Web 场景怎么做才算真落实？（FR-009）
+
+Web 服务进程是常驻的，不能像 CLI 那样靠进程退出自动丢弃状态，更不能用全局 Python 变量存对话历史（否则打开两个浏览器标签页会互相串话）：
+- **按标签页隔离**：每个标签页绑定独立的 `gr.State(value=None, delete_callback=controller.cleanup_session)`，内部只存 `session_id`、纯文本历史与临时导出文件路径；
+- **三道释放时机与真实边界**：
+  - 点击「新会话」：**立即**调用 `assistant.close(old_sid)` 并删除控制器临时目录里的旧 `.md`；
+  - 关闭或刷新标签页：Gradio 6 不会立刻触发 `delete_callback`，而是先在 `routes.py` 把会话标为 `is_closed=True`，并由 `state_holder.py` 强制将保留时间设为 **`STATE_TTL_WHEN_CLOSED = 3600` 秒**，因此**最迟约 1 小时**由框架后台循环回收；
+  - 退出 `tu ui` 进程：`finally` **立即**调用 `cleanup_all()` 释放全部残留会话并销毁控制器临时目录，Gradio 也会在退出时清空自身缓存副本（`age=None`）；
+- **避免 `delete_callback` 阻塞事件循环**：Gradio 的 `_delete_state` 协程每秒在 asyncio 事件循环线程同步调用 `delete_all_expired_state()`。如果 `cleanup_session` 阻塞等待互斥锁，恰逢另一标签页正在跑 30–60 秒的 7B 推理，整个事件循环会被卡死；因此 `cleanup_session` 先 `acquire(blocking=False)`，拿不到锁时交给守护线程异步清理；
+- **导出缓存副本的生命周期**：`gr.DownloadButton` 会把控制器写出的 `.md` 复制一份到 Gradio 自己的缓存目录供浏览器下载。该副本不归控制器删除（点「新会话」不会立刻删掉缓存副本），而由 `delete_cache=(600, 7200)`（每 10 分钟清理超过 2 小时的缓存，兼顾现场演示讲解时长不 404）或进程退出时由框架统一删除；
+- **全链路异常回滚**：`orchestrator.py` 在写入本轮 `user` 消息前记录长度，无论后续是 `client.chat(...)` 断连超时，还是 `verify_output` / 知识库查询抛出 `sqlite3.Error`，都会把本轮悬挂的 `user` 消息和会话意图状态完整回滚，避免重试时污染多轮上下文。
+
+### 4. 本地演示的“隐形外连”排查
+
+做到“数据不出域（FR-033）”不能只看 `127.0.0.1` 和 `share=False`，还要堵住框架自带的隐形外网请求与不必要的文件暴露面：
+- **关闭遥测**：在 `import gradio` 之前设置 `GRADIO_ANALYTICS_ENABLED=False`，并传入 `gr.Blocks(analytics_enabled=False)`；
+- **去掉外链字体**：Gradio 默认主题内置 `GoogleFont`（加载外部字体样式表），改为本机系统字体 `gr.themes.Soft(font=[gr.themes.Font("system-ui"), "sans-serif"], font_mono=[gr.themes.Font("ui-monospace"), "monospace"])`，实测 `_stylesheets == []`；
+- **严格监听与最小文件暴露面**：`validate_ui_host` 只放行 `127.0.0.1`（拒绝 `0.0.0.0`、局域网 IP 及 `localhost` 解析歧义），`launch()` 显式传 `share=False`、`footer_links=[]`；由于 `tempfile.gettempdir()` 本来就在 Gradio 默认允许范围且浏览器下载走缓存副本，不额外传入 `allowed_paths=[export_dir]`，避免把所有标签页的导出临时目录暴露到 `/file=` 路由。
+
+---
+
 ### 可以继续问的问题
 
 - 为什么在正则解析里要专门排除“写了 15 篇文章”和“修改第 2 篇”？中文自然语言规则护栏的常见误伤类型有哪些？
 - 如果未来正式阶段改成“编排层按篇循环”，每篇的脱敏状态和 `raw_content` 评测口径应该怎么设计？
+- `gr.Blocks(delete_cache=(600, 7200))` 的过期时长为什么既不能设太短（如 5 分钟）也不能无限大？在现场演示体验与本地隐私留存之间如何权衡？

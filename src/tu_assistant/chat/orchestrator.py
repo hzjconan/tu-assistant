@@ -63,110 +63,119 @@ def process_turn(
         session.anonymize_state,
         session.user_entities,
     )
+    prev_len = len(session.messages)
+    prev_intent = session.intent
+    prev_active = session.anonymize_state.article_task_active
     add_turn(session, Turn(role="user", content=user_message))
 
-    if decision.action == "rejected":
+    try:
+        if decision.action == "rejected":
+            turn = Turn(
+                role="assistant",
+                content=decision.notice or "",
+                raw_content=None,
+                citations=[],
+                question_count=0,
+                requested_article_count=decision.requested,
+                target_article_count=decision.target,
+                article_count_action=decision.action,
+            )
+            add_turn(session, turn)
+            return turn
+
+        system_prompt = (
+            build_system_prompt(
+                max_questions=session.config.get("max_questions_per_turn", 5),
+                default_article_count=session.config.get("default_article_count", 3),
+            )
+            if session.config.get("use_system_prompt", True)
+            else None
+        )
+        messages = to_openai_messages(session, system_prompt)
+        if decision.action == "use_default" and decision.target is not None:
+            messages[-1] = {
+                **messages[-1],
+                "content": messages[-1]["content"]
+                + build_article_count_instruction(decision.target),
+            }
+        resp = client.chat(messages, temperature=temperature)
+        raw = resp.content
+
+        verified = verify_output(raw, kb_conn)
+        text = verified.text
+        protected_spans = list(verified.protected_spans)
+
+        # 关联补全兜底（FR-019）：被引用条款的已确认关联若未被引用，追加提示
+        resolved = {c.resolved_clause_id for c in verified.citations if c.resolved_clause_id}
+        related = confirmed_relations_from(kb_conn, list(resolved))
+        extra = list(
+            dict.fromkeys(
+                rel.to_clause_id for rel in related if rel.to_clause_id not in resolved
+            )
+        )
+        if extra:
+            blocks = [_related_clause_block(cid, kb_conn) for cid in extra]
+            blocks = [b for b in blocks if b]
+            if blocks:
+                text += "\n\n**相关条款（系统补充）**\n\n"
+                for i, block in enumerate(blocks):
+                    if i > 0:
+                        text += "\n\n"
+                    start = len(text)
+                    text += block
+                    protected_spans.append((start, len(text)))
+
+        # 统一维护本轮会话意图、文章续改状态与是否执行身份检查
+        has_citation = bool(verified.citations)
+        new_intent, new_active, should_anonymize = classify_turn_intent(
+            user_message,
+            text,
+            has_citation=has_citation,
+            article_task_active=session.anonymize_state.article_task_active,
+            current_intent=session.intent,
+        )
+        session.intent = new_intent
+        session.anonymize_state.article_task_active = new_active
+
+        if has_citation:
+            text += DISCLAIMER
+
+        citations = verified.citations
+        person_replacements = 0
+        org_replacements = 0
+        anonymize_blocked = False
+        if should_anonymize:
+            anon = anonymize_article_text(text, session.anonymize_state, protected_spans)
+            text = anon.text
+            person_replacements = anon.person_replacements
+            org_replacements = anon.org_replacements
+            anonymize_blocked = anon.blocked
+            if anonymize_blocked:
+                citations = []
+            else:
+                citations = sanitize_citations(
+                    verified.citations, session.anonymize_state, draft_text=text
+                )
+
+        question_count = 0 if anonymize_blocked else len(RE_QUESTION_LINE.findall(text))
+
         turn = Turn(
             role="assistant",
-            content=decision.notice or "",
-            raw_content=None,
-            citations=[],
-            question_count=0,
+            content=text,
+            raw_content=raw if eval_mode else None,
+            citations=citations,
+            question_count=question_count,
+            person_replacements=person_replacements,
+            org_replacements=org_replacements,
+            anonymize_blocked=anonymize_blocked,
             requested_article_count=decision.requested,
             target_article_count=decision.target,
             article_count_action=decision.action,
         )
         add_turn(session, turn)
         return turn
-
-    system_prompt = (
-        build_system_prompt(
-            max_questions=session.config.get("max_questions_per_turn", 5),
-            default_article_count=session.config.get("default_article_count", 3),
-        )
-        if session.config.get("use_system_prompt", True)
-        else None
-    )
-    messages = to_openai_messages(session, system_prompt)
-    if decision.action == "use_default" and decision.target is not None:
-        messages[-1] = {
-            **messages[-1],
-            "content": messages[-1]["content"]
-            + build_article_count_instruction(decision.target),
-        }
-    resp = client.chat(messages, temperature=temperature)
-    raw = resp.content
-
-    verified = verify_output(raw, kb_conn)
-    text = verified.text
-    protected_spans = list(verified.protected_spans)
-
-    # 关联补全兜底（FR-019）：被引用条款的已确认关联若未被引用，追加提示
-    resolved = {c.resolved_clause_id for c in verified.citations if c.resolved_clause_id}
-    related = confirmed_relations_from(kb_conn, list(resolved))
-    extra = list(
-        dict.fromkeys(
-            rel.to_clause_id for rel in related if rel.to_clause_id not in resolved
-        )
-    )
-    if extra:
-        blocks = [_related_clause_block(cid, kb_conn) for cid in extra]
-        blocks = [b for b in blocks if b]
-        if blocks:
-            text += "\n\n**相关条款（系统补充）**\n\n"
-            for i, block in enumerate(blocks):
-                if i > 0:
-                    text += "\n\n"
-                start = len(text)
-                text += block
-                protected_spans.append((start, len(text)))
-
-    # 统一维护本轮会话意图、文章续改状态与是否执行身份检查
-    has_citation = bool(verified.citations)
-    new_intent, new_active, should_anonymize = classify_turn_intent(
-        user_message,
-        text,
-        has_citation=has_citation,
-        article_task_active=session.anonymize_state.article_task_active,
-        current_intent=session.intent,
-    )
-    session.intent = new_intent
-    session.anonymize_state.article_task_active = new_active
-
-    if has_citation:
-        text += DISCLAIMER
-
-    citations = verified.citations
-    person_replacements = 0
-    org_replacements = 0
-    anonymize_blocked = False
-    if should_anonymize:
-        anon = anonymize_article_text(text, session.anonymize_state, protected_spans)
-        text = anon.text
-        person_replacements = anon.person_replacements
-        org_replacements = anon.org_replacements
-        anonymize_blocked = anon.blocked
-        if anonymize_blocked:
-            citations = []
-        else:
-            citations = sanitize_citations(
-                verified.citations, session.anonymize_state, draft_text=text
-            )
-
-    question_count = 0 if anonymize_blocked else len(RE_QUESTION_LINE.findall(text))
-
-    turn = Turn(
-        role="assistant",
-        content=text,
-        raw_content=raw if eval_mode else None,
-        citations=citations,
-        question_count=question_count,
-        person_replacements=person_replacements,
-        org_replacements=org_replacements,
-        anonymize_blocked=anonymize_blocked,
-        requested_article_count=decision.requested,
-        target_article_count=decision.target,
-        article_count_action=decision.action,
-    )
-    add_turn(session, turn)
-    return turn
+    except Exception:
+        del session.messages[prev_len:]
+        session.intent = prev_intent
+        session.anonymize_state.article_task_active = prev_active
+        raise

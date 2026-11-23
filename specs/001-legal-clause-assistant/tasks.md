@@ -219,7 +219,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 **Purpose**: 可对外演示的网页界面、演示准备、文档收尾
 
-- [ ] T069 实现 Gradio 演示界面 `src/tu_assistant/ui/app.py` 与 `tu ui`：多轮对话、新会话、保存当前回复为 Markdown；只监听 127.0.0.1（quickstart V6）
+- [x] T069 实现 Gradio 演示界面 `src/tu_assistant/ui/app.py` 与 `tu ui`：多轮对话、新会话、保存当前回复为 Markdown；只监听 127.0.0.1（quickstart V6）
+  - 2026-11-23 经初版 2 轮独立复审、第三方二轮评审 7 项修订、`reviewer-v2` 2 轮终审及最终代码实机 V6 联调重跑通过并获用户确认验收。落地 `src/tu_assistant/ui/app.py`（`validate_ui_host` 严格仅允许 `127.0.0.1`、`ChatUIController` 仅依赖 `Assistant` 协议、`cleanup_session` 非阻塞事件循环守护线程清理、`create_ui_app` Gradio 6.31.0 零遥测/零 Google Fonts 外链/`delete_cache=(600, 7200)`/单并发队列、`launch_ui` 写死 `share=False`）、`tu ui` CLI（fail-fast 校验与 `finally` 资源清理）、`kb/store.py` & `chat/assistant.py` 只读连接可选 `check_same_thread`、`chat/orchestrator.py` 全链路 `try/except` 异常回滚悬挂 `user` 轮及状态，以及 `tests/unit/test_ui.py`；全量 `uv run pytest` 462 passed / 6 xfailed，`ruff` 全绿，T075 `output.sha256` 25/25 OK；同步更新学习文档 `[L7.2]` 与术语表。[执行单与复审记录](../../docs/handoffs/T069-gradio-ui-handoff.md)
 - [ ] T070 准备演示场景脚本 `docs/demo-scenarios.md`：模糊开场 → 追问 → 咨询；多违法行为；拒答；生成 3 篇普法文章 → 修改 → 保存（场景内容使用虚构案情）
 - [ ] T071 [P] 运行 quickstart.md 全部验证场景（V1–V7），记录结果
 - [ ] T072 [P] 更新 `README.md`：项目简介、环境准备、常用命令、文档索引
