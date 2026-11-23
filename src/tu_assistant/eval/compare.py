@@ -320,14 +320,14 @@ def align_cases(base: EvalRunResults, trained: EvalRunResults) -> list[tuple[str
 
 def load_doc_index(kb_path: str | Path) -> list[tuple[str, str]]:
     """读取历史知识库的文件名映射：[(doc_id, title)]。"""
-    conn = open_kb(kb_path)
+    conn = open_kb(kb_path, read_only=True)
     try:
         return conn.execute("select doc_id, title from legal_documents").fetchall()
     finally:
         conn.close()
 
 
-def resolve_kb_path(manifest: dict, artifacts_dir: str | Path) -> Path:
+def _kb_path_from_manifest(manifest: dict, artifacts_dir: str | Path) -> Path:
     """manifest inputs.kb 是相对仓库的路径；跨工作区时退回 artifacts_dir/kb/ 同名文件。"""
     stored = (manifest.get("inputs") or {}).get("kb")
     if not stored:

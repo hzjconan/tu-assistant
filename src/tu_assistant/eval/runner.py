@@ -89,7 +89,7 @@ def run_eval(
     session_config: SessionConfig | None = None,
 ) -> dict:
     cases = load_cases(cases_path)
-    kb_conn = open_kb(kb_path)
+    kb_conn = open_kb(kb_path, read_only=True)
     issues = validate_gold_clauses(cases, kb_conn)
 
     client = ModelClient(endpoint, allowed_hosts, model=model_name)

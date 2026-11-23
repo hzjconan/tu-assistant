@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
+from ..config import DEFAULT_APP_CONFIG
 from ..kb.models import Clause
-from ..kb.store import article_clauses
+from ..kb.store import article_clauses, open_kb_from_config
 from .models import Citation
 from .parse import parse_citations
 
@@ -248,3 +251,25 @@ def verify_output(text: str, conn: sqlite3.Connection) -> VerifyResult:
         citations=citations,
         protected_spans=protected_spans,
     )
+
+
+def verify_output_from_config(
+    text: str,
+    config_path: str | Path = DEFAULT_APP_CONFIG,
+    *,
+    kb_version: str | None = None,
+    artifacts_dir: str | Path | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> VerifyResult:
+    """按配置文件（如 configs/app.yaml 中的 kb.version）只读加载知识库并执行出处校验。"""
+    conn, _kb_path = open_kb_from_config(
+        config_path,
+        kb_version=kb_version,
+        artifacts_dir=artifacts_dir,
+        overrides=overrides,
+        read_only=True,
+    )
+    try:
+        return verify_output(text, conn)
+    finally:
+        conn.close()

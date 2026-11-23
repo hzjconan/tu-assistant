@@ -88,3 +88,29 @@ uv run pytest tests/unit/test_runtime_isolation.py
 
 **预期**：运行时代码不导入外部大模型客户端；模型端点不在白名单时拒绝启动；
 普法文章中不出现会话里用户提供的单位与人名（宪章原则 III、FR-030、SC-011）。
+
+## 知识库更新与版本切换（US4）
+
+```bash
+# 1. 文档新增、修改或删除后整批重新导入，生成新 kb_version
+uv run tu kb import <新文档目录>
+
+# 2. 对比新旧知识库版本（只输出条款编号与变化类型，不输出条文正文）
+uv run tu kb diff <旧kb_version> <新kb_version>
+
+# 3. 在 configs/app.yaml 中设置 kb.version（或保留 null 自动使用最新版本），无需修改代码
+# 4. 运行基于公开测试样例的知识库更新集成测试
+uv run pytest tests/integration/test_kb_update.py
+```
+
+**预期**：`tu kb diff` 准确列出新增、删除、原文变化的条款编号；修改 `configs/app.yaml` 中的 `kb.version` 后，出处校验层与对话编排层立即加载指定版本的知识库并引用新原文（FR-003、FR-004）。
+
+> **重要提示 1：`kb.version: null` 自动切库与未确认关联的过渡期风险**
+> - `tu kb import` 每次从零新建 SQLite 知识库，刚导入完成的新库中**已确认条款关联为 `0` 条**（`clause_relations` 中 `confirmed=1` 的记录需经 `extract -> review -> confirm` 导入后才存在；若是从旧版无 `第1款` 标记的库迁移，还需按需执行 `tu kb derive`）。
+> - 当 `configs/app.yaml` 保持默认的 `kb.version: null` 时，一旦运行 `tu kb import` 产生更新的时间戳版本，`tu chat`、`tu eval run`、`tu synth sft`（在不显式传 `--kb-version` 时）会立即自动切换到这个尚无已确认关联的新库。
+> - **操作建议**：在新库尚未走完关联抽取与人工确认、或正在进行同版本评测对比期间，应先在 `configs/app.yaml` 中将 `kb.version` 显式锁定为当前稳定版本号（如 `"kb-20261119-045641"`），待新库关联确认就绪后再切换。
+>
+> **重要提示 2：知识更新需重训（research R1 风险）**
+> - **立即生效的部分（出处校验层）**：切换 `kb.version` 后，若模型引用的条款编号在新版本中原文已修订，校验层会立即将其替换为新原文（`verdict=corrected`）；若该条款已在新版本中删除，校验层会立即拦截并删除该引用块（`verdict=not_found`）。
+> - **不会自动生效的部分（模型参数记忆）**：由于 POC 采取“把法规知识训进模型参数、推理时不检索知识库”的路线（research R1），仅更新 SQLite 知识库不会改变模型权重。对于新入库的文件或新增条款，未重训的模型无法在回答中主动识别并引出；对于适用条件或法律责任发生实质变更的条款，模型仍可能按旧记忆给出过时的分析或选错条号。
+> - **完整更新链路**：当法规发生实质性新增、修订或废止时，除了执行 `tu kb import`（及按需 `tu kb derive`）与 `tu kb diff` 外，**必须重新抽取并人工确认条款关联**（`tu kb relations extract` → `tu kb relations review/confirm`，因为 `tu synth sft` 的关系样本与运行时的确定性关联补全均依赖已确认关联）→ 重新合成或刷新训练数据集（`tu synth sft --kb-version <新版本>`）→ 重新微调模型（`tu train`）→ 用评测集完成回归评测（`tu eval run`，对应 spec SC-014）。

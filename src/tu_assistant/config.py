@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,20 @@ def load_app_config(
 
 def load_synth_config(path: str | Path = DEFAULT_SYNTH_CONFIG) -> dict[str, Any]:
     return load_yaml(path)
+
+
+def resolve_model_name(
+    cfg: dict[str, Any],
+    artifacts_dir: str | Path = "artifacts",
+) -> str:
+    """解析运行时模型名：当 runtime.model_name 为 'default' 时自动读取 artifacts/serve/current.json。"""
+    name = get(cfg, "runtime.model_name", "default")
+    if name != "default":
+        return str(name)
+    cur = Path(artifacts_dir) / "serve" / "current.json"
+    if cur.exists():
+        return str(json.loads(cur.read_text(encoding="utf-8"))["model"])
+    return str(name)
 
 
 def external_api_key() -> str:

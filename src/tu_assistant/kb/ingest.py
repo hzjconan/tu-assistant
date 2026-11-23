@@ -13,7 +13,15 @@ from ..manifest import write_manifest
 from .models import DocumentMeta
 from .parse import parse_clauses
 from .readers import SUPPORTED_SUFFIXES, read_document
-from .store import create_kb, doc_id_for, insert_clause, insert_document, new_kb_version, set_meta
+from .store import (
+    _validate_kb_version,
+    create_kb,
+    doc_id_for,
+    insert_clause,
+    insert_document,
+    new_kb_version,
+    set_meta,
+)
 from .validate import render_report, validate_clauses, validate_meta
 
 RE_TITLE_BOOK = re.compile(r"《([^》]+)》")
@@ -123,6 +131,8 @@ def _resolve_same_title_versions(
 def import_directory(
     input_dir: str | Path,
     artifacts_dir: str | Path = "artifacts",
+    *,
+    kb_version: str | None = None,
 ) -> dict:
     """整批导入目录下全部文档，生成新知识库版本。
 
@@ -133,8 +143,23 @@ def import_directory(
         p for p in Path(input_dir).rglob("*")
         if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES
     )
-    kb_version = new_kb_version()
-    kb_path = Path(artifacts_dir) / "kb" / f"{kb_version}.sqlite"
+    kb_dir = Path(artifacts_dir) / "kb"
+    kb_dir.mkdir(parents=True, exist_ok=True)
+    if kb_version is not None:
+        resolved_version = _validate_kb_version(kb_version)
+        kb_path = kb_dir / f"{resolved_version}.sqlite"
+        if kb_path.exists():
+            raise FileExistsError(f"目标知识库已存在：{kb_path}")
+    else:
+        base = new_kb_version()
+        resolved_version = base
+        kb_path = kb_dir / f"{resolved_version}.sqlite"
+        seq = 1
+        while kb_path.exists():
+            resolved_version = f"{base}-{seq:02d}"
+            kb_path = kb_dir / f"{resolved_version}.sqlite"
+            seq += 1
+    kb_version = resolved_version
     conn = create_kb(kb_path)
 
     report_rows: list[dict] = []

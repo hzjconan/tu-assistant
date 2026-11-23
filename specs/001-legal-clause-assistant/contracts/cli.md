@@ -11,6 +11,7 @@
 | `tu kb relations extract` | 用规则抽取条款关联，待人工确认 | `relations_pending.jsonl` |
 | `tu kb relations confirm <file>` | 导入人工确认结果 | 更新 `kb_version` |
 | `tu kb show <title> <article_no>` | 查看某条款，便于人工核对 | — |
+| `tu kb diff <v1> <v2>` | 对比两个知识库版本的新增、删除、原文变化条款（只输出编号与变化类型，不输出条文正文） | — |
 
 ## 数据合成与训练
 

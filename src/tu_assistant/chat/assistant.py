@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Protocol
+from pathlib import Path
+from typing import Any, Protocol
 
 from ..citation.models import Citation
+from ..config import DEFAULT_APP_CONFIG, get, load_app_config, resolve_model_name
+from ..kb.store import normalize_artifacts_dir, open_kb, resolve_kb_path
 from ..runtime.client import ModelClient
 from .article_count import validate_count_limits
 from .export import export_markdown
@@ -26,6 +29,20 @@ class SessionConfig:
 
     def __post_init__(self) -> None:
         validate_count_limits(self.default_article_count, self.max_article_count)
+
+
+def session_config_from(
+    cfg: dict[str, Any],
+    *,
+    use_system_prompt: bool = True,
+) -> SessionConfig:
+    """从加载后的 app.yaml 字典构造 SessionConfig（供 tu chat / tu eval run / tu ui 共用）。"""
+    return SessionConfig(
+        max_questions_per_turn=get(cfg, "session.max_questions_per_turn", 5),
+        default_article_count=get(cfg, "session.default_article_count", 3),
+        max_article_count=get(cfg, "session.max_article_count", 10),
+        use_system_prompt=use_system_prompt,
+    )
 
 
 @dataclass
@@ -54,12 +71,81 @@ class TrainedAssistant:
         *,
         eval_mode: bool = False,
         temperature: float = 0.7,
+        kb_path: Path | None = None,
+        owns_kb: bool = False,
     ) -> None:
         self._client = client
         self._kb = kb_conn
         self._eval_mode = eval_mode
         self._temperature = temperature
+        self._kb_path = kb_path
+        self._owns_kb = owns_kb
         self._sessions: dict[str, Session] = {}
+
+    @property
+    def kb_path(self) -> Path | None:
+        return self._kb_path
+
+    @property
+    def kb_version(self) -> str | None:
+        if self._kb_path is not None:
+            return self._kb_path.stem
+        try:
+            row = self._kb.execute(
+                "SELECT value FROM kb_meta WHERE key='kb_version'"
+            ).fetchone()
+            return str(row[0]) if row and row[0] else None
+        except sqlite3.Error:
+            return None
+
+    @classmethod
+    def from_config(
+        cls,
+        config_path: str | Path = DEFAULT_APP_CONFIG,
+        *,
+        client: ModelClient | None = None,
+        kb_version: str | None = None,
+        artifacts_dir: str | Path | None = None,
+        overrides: dict[str, Any] | None = None,
+        eval_mode: bool = False,
+        temperature: float = 0.7,
+    ) -> TrainedAssistant:
+        """按配置文件（configs/app.yaml）加载指定知识库版本并初始化 TrainedAssistant。"""
+        cfg = load_app_config(config_path, overrides=overrides)
+        eff_artifacts = normalize_artifacts_dir(artifacts_dir, config=cfg)
+        kb_path = resolve_kb_path(
+            kb_version,
+            config=cfg,
+            artifacts_dir=eff_artifacts,
+        )
+        conn = open_kb(kb_path, read_only=True)
+        try:
+            if client is None:
+                model_name = resolve_model_name(cfg, eff_artifacts)
+                client = ModelClient(
+                    get(cfg, "runtime.model_endpoint"),
+                    get(cfg, "runtime.allowed_hosts"),
+                    model=model_name,
+                )
+            assistant = cls(client, conn, eval_mode=eval_mode, temperature=temperature)
+        except Exception:
+            conn.close()
+            raise
+        assistant._kb_path = kb_path
+        assistant._owns_kb = True
+        return assistant
+
+    def close_kb(self) -> None:
+        """若知识库连接由 from_config 创建，则安全关闭该连接。"""
+        if getattr(self, "_owns_kb", False) and getattr(self, "_kb", None) is not None:
+            self._kb.close()
+            self._owns_kb = False
+
+    def __enter__(self) -> TrainedAssistant:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close_kb()
 
     def new_session(self, config: SessionConfig | None = None) -> str:
         cfg = config or SessionConfig()

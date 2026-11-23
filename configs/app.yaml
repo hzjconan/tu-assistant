@@ -14,7 +14,11 @@ session:
   max_article_count: 10        # 普法文章单次上限（FR-028）
 
 kb:
-  version: null   # 知识库版本（artifacts/kb/<version>.sqlite）；null = 使用最新版本
+  # 知识库版本（artifacts/kb/<version>.sqlite）；null = 自动使用 artifacts/kb/ 下最新版本
+  # 填入具体版本号（如 "kb-20261119-045641"）即可无代码锁定/回滚版本；CLI --kb-version 可覆盖
+  # 注意：新执行 `tu kb import` 生成的初始库尚未包含已确认关联（confirmed_relations=0），
+  # 在新库完成关联抽取与确认、或进行同口径评测对比前，建议先将此项锁定为指定版本号
+  version: null
 
 paths:
   artifacts: "artifacts"

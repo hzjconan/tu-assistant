@@ -24,12 +24,19 @@ def version() -> None:
     typer.echo("tu-assistant 0.1.0")
 
 
-def _latest_kb(artifacts_dir: str) -> Path:
-    files = sorted(Path(artifacts_dir, "kb").glob("kb-*.sqlite"))
-    if not files:
-        typer.secho("没有知识库版本，请先运行 tu kb import", fg="red")
-        raise typer.Exit(1)
-    return files[-1]
+def _resolve_cli_kb(
+    kb_version: str | None = None,
+    *,
+    config: dict | None = None,
+    artifacts: str | None = None,
+) -> Path:
+    from .kb.store import KBError, resolve_kb_path
+
+    try:
+        return resolve_kb_path(kb_version, config=config, artifacts_dir=artifacts)
+    except KBError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
 
 
 @kb_app.command("import")
@@ -82,12 +89,8 @@ def kb_list(
     """列出知识库中的文件（供人工核对）。"""
     from .kb.store import list_documents, open_kb
 
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
-    conn = open_kb(kb_path)
+    kb_path = _resolve_cli_kb(kb_version, artifacts=artifacts)
+    conn = open_kb(kb_path, read_only=True)
     for d in list_documents(conn):
         typer.echo(
             f"{d['title']}（{d['version_label'] or '无版本'}）"
@@ -108,12 +111,8 @@ def kb_show(
     """查看某条款原文，便于人工核对。"""
     from .kb.store import article_clauses, get_clause, open_kb
 
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
-    conn = open_kb(kb_path)
+    kb_path = _resolve_cli_kb(kb_version, artifacts=artifacts)
+    conn = open_kb(kb_path, read_only=True)
     if paragraph is None and item is None:
         rows = article_clauses(conn, title, article_no)
     else:
@@ -136,12 +135,8 @@ def kb_lookup(
     """按 clause_id 查条款（核对关联候选时用）。"""
     from .kb.store import get_clause_by_id, get_document, open_kb
 
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
-    conn = open_kb(kb_path)
+    kb_path = _resolve_cli_kb(kb_version, artifacts=artifacts)
+    conn = open_kb(kb_path, read_only=True)
     c = get_clause_by_id(conn, clause_id)
     doc = get_document(conn, c.doc_id) if c else None
     conn.close()
@@ -149,6 +144,27 @@ def kb_lookup(
         typer.secho("未找到该条款", fg="red")
         raise typer.Exit(1)
     typer.echo(f"{doc.title}（{doc.version_label or '无版本'}）{c.number_text}\n{c.text}\n")
+
+
+@kb_app.command("diff")
+def kb_diff(
+    v1: str = typer.Argument(..., help="旧知识库版本（如 kb-20261113-093057）或 sqlite 路径"),
+    v2: str = typer.Argument(..., help="新知识库版本（如 kb-20261119-045641）或 sqlite 路径"),
+    summary_only: bool = typer.Option(
+        False, "--summary-only", help="仅输出汇总与文件级变化，不展开逐条条款编号清单"
+    ),
+    artifacts: str = typer.Option("artifacts", help="产物目录"),
+) -> None:
+    """对比两个知识库版本的新增、删除、原文变化条款（只输出编号与变化类型，不输出条文正文）。"""
+    from .kb.diff import diff_kbs, render_diff
+    from .kb.store import KBError
+
+    try:
+        res = diff_kbs(v1, v2, artifacts_dir=artifacts)
+    except KBError as e:
+        typer.secho(f"对比失败：{e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(render_diff(res, summary_only=summary_only), nl=False)
 
 
 relations_app = typer.Typer(help="条款关联：抽取与人工确认")
@@ -172,12 +188,8 @@ def relations_extract(
     from .kb.relations import extract_relations
     from .kb.store import all_clauses, open_kb
 
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
-    conn = open_kb(kb_path)
+    kb_path = _resolve_cli_kb(kb_version, artifacts=artifacts)
+    conn = open_kb(kb_path, read_only=True)
     clauses = all_clauses(conn)
     conn.close()
 
@@ -265,12 +277,8 @@ def relations_review(
         if "decision" not in row:
             row["decision"] = "confirm" if row.get("confirmed") else "pending"
 
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
-    conn = open_kb(kb_path)
+    kb_path = _resolve_cli_kb(kb_version, artifacts=artifacts)
+    conn = open_kb(kb_path, read_only=True)
 
     def save() -> None:
         path.write_text(
@@ -433,16 +441,10 @@ def serve_model(
 
 
 def _model_name(cfg, artifacts: str) -> str:
-    """model_name 为 default 时，读取 serve model 记录的当前模型。"""
-    from .config import get
+    """兼容封装：委托给 config.resolve_model_name。"""
+    from .config import resolve_model_name
 
-    name = get(cfg, "runtime.model_name", "default")
-    if name != "default":
-        return name
-    cur = Path(artifacts, "serve", "current.json")
-    if cur.exists():
-        return json.loads(cur.read_text(encoding="utf-8"))["model"]
-    return name
+    return resolve_model_name(cfg, artifacts)
 
 
 synth_app = typer.Typer(help="数据合成（唯一使用外部大模型的命令组）")
@@ -466,12 +468,8 @@ def synth_evalcases(
     from .synth.evalcases import generate_candidates
     from .synth.llm import from_config
 
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
-    conn = open_kb(kb_path)
+    kb_path = _resolve_cli_kb(kb_version, artifacts=artifacts)
+    conn = open_kb(kb_path, read_only=True)
     llm = from_config(load_synth_config(synth_config))
     result = generate_candidates(conn, llm, n=n)
     conn.close()
@@ -518,16 +516,12 @@ def synth_sft(
         write_dataset,
     )
 
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
+    kb_path = _resolve_cli_kb(kb_version, artifacts=artifacts)
     if reuse_only and not reuse_dataset:
         typer.secho("--reuse-only 需要同时提供 --reuse-dataset", fg="red")
         raise typer.Exit(1)
 
-    conn = open_kb(kb_path)
+    conn = open_kb(kb_path, read_only=True)
     cfg = load_synth_config(synth_config)
     llm = None if skip_llm else from_config(cfg)
     titles = knowledge.doc_titles(conn)
@@ -873,12 +867,8 @@ def eval_cases_review(
     for row in rows:
         row.setdefault("confirmed", False)
 
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
-    conn = open_kb(kb_path)
+    kb_path = _resolve_cli_kb(kb_version, artifacts=artifacts)
+    conn = open_kb(kb_path, read_only=True)
 
     def save() -> None:
         path.write_text(
@@ -1027,40 +1017,35 @@ def eval_cases_promote(
 @eval_app.command("run")
 def eval_run(
     cases: str = typer.Option(..., "--cases", help="评测集目录或 jsonl"),
-    kb_version: str | None = typer.Option(None),
+    kb_version: str | None = typer.Option(None, help="知识库版本（覆盖 app.yaml 的 kb.version）"),
     exp: str | None = typer.Option(None, "--exp", help="实验 ID（记录用）"),
     no_system_prompt: bool = typer.Option(
         False, "--no-system-prompt",
         help="评测时不发送 system prompt（对照实验用）",
     ),
     config: str = typer.Option("configs/app.yaml"),
-    artifacts: str = typer.Option("artifacts"),
+    artifacts: str | None = typer.Option(
+        None, help="产物目录（默认取 app.yaml 的 paths.artifacts 或 artifacts）"
+    ),
 ) -> None:
     """运行评测（temperature=0，不调用外部服务）。"""
-    from .chat.assistant import SessionConfig
-    from .config import get, load_app_config
+    from .chat.assistant import session_config_from
+    from .config import get, load_app_config, resolve_model_name
     from .eval.runner import run_eval
+    from .kb.store import normalize_artifacts_dir
 
     cfg = load_app_config(config)
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
+    eff_artifacts = str(normalize_artifacts_dir(artifacts, config=cfg))
+    kb_path = _resolve_cli_kb(kb_version, config=cfg, artifacts=eff_artifacts)
     result = run_eval(
         cases_path=cases,
         kb_path=kb_path,
         endpoint=get(cfg, "runtime.model_endpoint"),
         allowed_hosts=get(cfg, "runtime.allowed_hosts"),
-        model_name=_model_name(cfg, artifacts),
-        artifacts_dir=artifacts,
+        model_name=resolve_model_name(cfg, eff_artifacts),
+        artifacts_dir=eff_artifacts,
         exp_id=exp,
-        session_config=SessionConfig(
-            max_questions_per_turn=get(cfg, "session.max_questions_per_turn", 5),
-            default_article_count=get(cfg, "session.default_article_count", 3),
-            max_article_count=get(cfg, "session.max_article_count", 10),
-            use_system_prompt=not no_system_prompt,
-        ),
+        session_config=session_config_from(cfg, use_system_prompt=not no_system_prompt),
     )
     typer.echo(f"run_id={result['run_id']}  用例 {result['cases']} 条 → {result['dir']}")
     if result["gold_issues"]:
@@ -1153,6 +1138,7 @@ def eval_compare(
     """对比多个评测 run（FR-035）；支持 --sc015 稳定性校验与 --sc016 POC 验收判定。"""
     from .eval.compare import (
         CompareError,
+        _kb_path_from_manifest,
         align_cases,
         align_general_cases,
         check_general_comparable,
@@ -1162,7 +1148,6 @@ def eval_compare(
         load_doc_index,
         load_run,
         render_compare_markdown,
-        resolve_kb_path,
         role_issues,
         same_system_issues,
         save_compare_artifact,
@@ -1189,7 +1174,7 @@ def eval_compare(
             base, trained = load_run(artifacts, runs[0]), load_run(artifacts, runs[1])
             issues = comparability_issues(base, trained) + role_issues(base, trained)
             aligned = align_cases(base, trained)
-            docs = load_doc_index(resolve_kb_path(base.manifest, artifacts))
+            docs = load_doc_index(_kb_path_from_manifest(base.manifest, artifacts))
             res = run_sc016(aligned, docs)
         except CompareError as e:
             typer.echo(f"输入错误：{e}", err=True)
@@ -1310,63 +1295,82 @@ def eval_compare(
 @app.command("chat")
 def chat(
     config: str = typer.Option("configs/app.yaml"),
-    artifacts: str = typer.Option("artifacts"),
-    kb_version: str | None = typer.Option(None),
+    artifacts: str | None = typer.Option(
+        None, help="产物目录（默认取 app.yaml 的 paths.artifacts 或 artifacts）"
+    ),
+    kb_version: str | None = typer.Option(None, help="知识库版本（覆盖 app.yaml 的 kb.version）"),
 ) -> None:
     """命令行多轮对话；/save <path> 保存最后一轮为 .md，/new 新会话，/quit 退出。"""
-    from .chat.assistant import SessionConfig, TrainedAssistant
-    from .config import get, load_app_config
-    from .kb.store import open_kb
+    from .chat.assistant import TrainedAssistant, session_config_from
+    from .config import get, load_app_config, resolve_model_name
+    from .kb.store import KBError, normalize_artifacts_dir, open_kb
     from .runtime.client import ModelClient
 
     cfg = load_app_config(config)
-    kb_path = (
-        Path(artifacts, "kb", f"{kb_version}.sqlite")
-        if kb_version
-        else _latest_kb(artifacts)
-    )
-    conn = open_kb(kb_path)
-    client = ModelClient(
-        get(cfg, "runtime.model_endpoint"),
-        get(cfg, "runtime.allowed_hosts"),
-        model=_model_name(cfg, artifacts),
-    )
-    assistant = TrainedAssistant(client, conn)
-    scfg = SessionConfig(
-        max_questions_per_turn=get(cfg, "session.max_questions_per_turn", 5),
-        default_article_count=get(cfg, "session.default_article_count", 3),
-        max_article_count=get(cfg, "session.max_article_count", 10),
-    )
-    sid = assistant.new_session(scfg)
-    typer.echo("进入对话（/save <路径> 保存，/new 新会话，/quit 退出）")
-    while True:
+    if hasattr(TrainedAssistant, "from_config"):
         try:
-            msg = typer.prompt("你")
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not msg.strip():
-            continue
-        if msg.startswith("/save"):
-            parts = msg.split(maxsplit=1)
-            if len(parts) < 2:
-                typer.echo("用法：/save <路径.md>")
-                continue
-            Path(parts[1]).write_text(
-                assistant.export_markdown(sid), encoding="utf-8"
+            assistant = TrainedAssistant.from_config(
+                config,
+                kb_version=kb_version,
+                artifacts_dir=artifacts,
             )
-            typer.echo(f"已保存到 {parts[1]}")
-            continue
-        if msg == "/new":
-            assistant.close(sid)
-            sid = assistant.new_session(scfg)
-            typer.echo("新会话")
-            continue
-        if msg in {"/quit", "/exit"}:
-            break
-        reply = assistant.send(sid, msg)
-        typer.echo(f"\n{reply.content}\n")
-    assistant.close(sid)
-    conn.close()
+        except KBError as e:
+            typer.secho(str(e), fg="red", err=True)
+            raise typer.Exit(2) from e
+        close_cb = assistant.close_kb
+        active_kb_ver = assistant.kb_version
+    else:
+        eff_artifacts = str(normalize_artifacts_dir(artifacts, config=cfg))
+        kb_path = _resolve_cli_kb(kb_version, config=cfg, artifacts=eff_artifacts)
+        conn = open_kb(kb_path, read_only=True)
+        try:
+            client = ModelClient(
+                get(cfg, "runtime.model_endpoint"),
+                get(cfg, "runtime.allowed_hosts"),
+                model=resolve_model_name(cfg, eff_artifacts),
+            )
+            assistant = TrainedAssistant(client, conn)
+        except Exception:
+            conn.close()
+            raise
+        close_cb = conn.close
+        active_kb_ver = kb_path.stem
+
+    try:
+        scfg = session_config_from(cfg)
+        sid = assistant.new_session(scfg)
+        typer.echo(
+            f"进入对话（知识库：{active_kb_ver}；/save <路径> 保存，/new 新会话，/quit 退出）"
+        )
+        while True:
+            try:
+                msg = typer.prompt("你")
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not msg.strip():
+                continue
+            if msg.startswith("/save"):
+                parts = msg.split(maxsplit=1)
+                if len(parts) < 2:
+                    typer.echo("用法：/save <路径.md>")
+                    continue
+                Path(parts[1]).write_text(
+                    assistant.export_markdown(sid), encoding="utf-8"
+                )
+                typer.echo(f"已保存到 {parts[1]}")
+                continue
+            if msg == "/new":
+                assistant.close(sid)
+                sid = assistant.new_session(scfg)
+                typer.echo("新会话")
+                continue
+            if msg in {"/quit", "/exit"}:
+                break
+            reply = assistant.send(sid, msg)
+            typer.echo(f"\n{reply.content}\n")
+        assistant.close(sid)
+    finally:
+        close_cb()
 
 
 if __name__ == "__main__":

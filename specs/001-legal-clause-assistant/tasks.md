@@ -204,9 +204,12 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 
 **Independent Test**: 修改一条条款后重新入库，出处校验层引用新原文；新文档中的内容经重训后可被识别（spec US4）
 
-- [ ] T066 [P] [US4] 实现 `tu kb diff <v1> <v2>` 于 `src/tu_assistant/kb/diff.py`：列出新增、删除、原文变化的条款（只输出编号与变化类型）
-- [ ] T067 [US4] 在 `configs/app.yaml` 中增加 `kb.version`，编排层与出处校验层按配置加载指定知识库版本；切换版本无需修改代码（FR-004）
-- [ ] T068 [US4] 用 `tests/fixtures/` 的样例验证"修改条款 → 重新入库 → 校验层使用新原文"的流程，写入集成测试 `tests/integration/test_kb_update.py`；在 quickstart 中补充"知识更新需重训"的说明（research R1 风险）
+- [x] T066 [P] [US4] 实现 `tu kb diff <v1> <v2>` 于 `src/tu_assistant/kb/diff.py`：列出新增、删除、原文变化的条款（只输出编号与变化类型）
+  - 2026-11-23 随 T066–T068 一并经内部独立只读复审、第三方独立评审修订及终审通过并获用户确认验收。落地 `src/tu_assistant/kb/diff.py`（只读快照、按 `status='current'` 逻辑键 `(title, article_no, paragraph_no, item_no)` 对齐、严格三分法仅按 `text` 判 `modified`、顶部汇总文件版本/`number_text` 变化/已确认关联变化、数据结构与渲染全程 0 字节条文正文泄漏）、`tu kb diff <v1> <v2> [--summary-only]` CLI 与 `tests/unit/test_kb_diff.py`；同步补录 `contracts/cli.md` 并更新学习文档 `[L3.3.1]` / 术语表。[执行单与复审记录](../../docs/handoffs/T066-T067-T068-kb-maintenance-handoff.md)
+- [x] T067 [US4] 在 `configs/app.yaml` 中增加 `kb.version`，编排层与出处校验层按配置加载指定知识库版本；切换版本无需修改代码（FR-004）
+  - 2026-11-23 随 T066–T068 一并验收完成。落地 `kb/store.py`（`KBError`、`latest_kb_path` 按 `stem` 排序、`normalize_artifacts_dir`、`resolve_kb_path`、`open_kb` 防静默建 0 字节空库与 `as_uri()` 只读模式、`open_kb_from_config`）、`config.resolve_model_name`、`verify_output_from_config`、`TrainedAssistant.from_config` 与 `session_config_from`；`tu chat`、`tu eval run`、`eval/runner.py`、`eval/compare.py` 及离线 `tu kb *`/`tu synth *`/`tu eval cases review` 全部接入只读防呆校验，新增 `tests/unit/test_kb_config.py`。[执行单与复审记录](../../docs/handoffs/T066-T067-T068-kb-maintenance-handoff.md)
+- [x] T068 [US4] 用 `tests/fixtures/` 的样例验证"修改条款 → 重新入库 → 校验层使用新原文"的流程，写入集成测试 `tests/integration/test_kb_update.py`；在 quickstart 中补充"知识更新需重训"的说明（research R1 风险）
+  - 2026-11-23 随 T066–T068 一并验收完成，Phase 6（US4）全部收口。落地 `kb/ingest.py` 同秒连续入库 `-01`/`-02` 防撞名与可选 `kb_version`、端到端集成测试 `tests/integration/test_kb_update.py`（覆盖改条/删条/增条、同秒防撞名、`kb diff` 反正文泄漏、零改代码切换 `app.yaml` `kb.version`、跨版本标签修订、缺失版本报错防空库及旧库 SHA-256 零修改），并在 `specs/001-legal-clause-assistant/quickstart.md` 补充 US4 验证步骤、`kb.version: null` 自动切库过渡期锁定建议与 research R1“知识更新需重训（含关联重抽确认）”完整链路；全量 `uv run pytest` 434 passed / 6 xfailed，`ruff` 全绿，4 份历史 KB 与 T075 `output.sha256` 25/25 OK。[执行单与复审记录](../../docs/handoffs/T066-T067-T068-kb-maintenance-handoff.md)
 
 **Checkpoint**: 知识库可更新、可追溯版本
 

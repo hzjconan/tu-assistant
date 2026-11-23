@@ -11,8 +11,14 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+from ..config import DEFAULT_APP_CONFIG, get, load_app_config
 from .models import Clause, ClauseRelation, DocumentMeta
+
+
+class KBError(ValueError):
+    """知识库版本定位、校验或打开错误。"""
 
 SCHEMA = """
 CREATE TABLE legal_documents (
@@ -294,5 +300,114 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute("INSERT OR REPLACE INTO kb_meta VALUES (?,?)", (key, value))
 
 
-def open_kb(path: str | Path) -> sqlite3.Connection:
-    return sqlite3.connect(Path(path))
+def _validate_kb_version(version: Any) -> str:
+    """校验 kb_version 合法性，防止非法类型、空白或路径穿越。"""
+    if not isinstance(version, str):
+        raise KBError(f"非法知识库版本号（必须为非空字符串）：{version!r}")
+    v = version.strip()
+    if not v or v != version:
+        raise KBError(f"非法知识库版本号（不能为空或含首尾空白）：{version!r}")
+    if v in {".", ".."} or "/" in v or "\\" in v or ".." in v:
+        raise KBError(f"非法知识库版本号（含非法路径字符）：{version!r}")
+    return v
+
+
+def latest_kb_path(artifacts_dir: str | Path = "artifacts") -> Path:
+    """查找 artifacts_dir/kb 下最新的 kb-*.sqlite 文件；不存在时抛 KBError。
+
+    按 stem（不含 .sqlite 后缀）排序，确保同秒派生的 kb-YYYYMMDD-HHMMSS-01
+    排在 kb-YYYYMMDD-HHMMSS 之后（避免 '.' > '-' 导致带后缀版本反排在前面）。
+    """
+    kb_dir = Path(artifacts_dir) / "kb"
+    files = sorted(
+        (p for p in kb_dir.glob("kb-*.sqlite") if p.is_file()),
+        key=lambda p: p.stem,
+    )
+    if not files:
+        raise KBError("没有知识库版本，请先运行 tu kb import")
+    return files[-1]
+
+
+def normalize_artifacts_dir(
+    artifacts_dir: str | Path | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+) -> Path:
+    """统一规范化 artifacts_dir：显式参数 > config['paths.artifacts'] > 'artifacts'。"""
+    raw = (
+        artifacts_dir
+        if artifacts_dir is not None
+        else get(config or {}, "paths.artifacts", "artifacts")
+    )
+    if not isinstance(raw, (str, Path)) or not str(raw).strip():
+        return Path("artifacts")
+    return Path(raw)
+
+
+def resolve_kb_path(
+    kb_version: str | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+    config_path: str | Path | None = None,
+    artifacts_dir: str | Path | None = None,
+) -> Path:
+    """按优先级解析知识库路径：显式 kb_version > config['kb.version'] > 最新版本。
+
+    同时支持从 config['paths.artifacts'] 回退产物目录（显式 artifacts_dir 优先）。
+    目标版本文件不存在时抛 KBError，绝不静默创建 0 字节空库。
+    """
+    if config is not None:
+        cfg = config
+    elif config_path is not None:
+        cfg = load_app_config(config_path)
+    else:
+        cfg = {}
+
+    eff_artifacts = normalize_artifacts_dir(artifacts_dir, config=cfg)
+
+    eff_version = kb_version if kb_version is not None else get(cfg, "kb.version")
+    if eff_version is None:
+        return latest_kb_path(eff_artifacts)
+
+    valid_version = _validate_kb_version(eff_version)
+    p = eff_artifacts / "kb" / f"{valid_version}.sqlite"
+    if not p.is_file():
+        raise KBError(f"知识库版本不存在：{valid_version}（未找到 {p}）")
+    return p
+
+
+def open_kb(path: str | Path, *, read_only: bool = False) -> sqlite3.Connection:
+    """打开已存在的 SQLite 知识库文件（或 :memory:）。
+
+    文件不存在时抛 KBError，防止 sqlite3.connect 静默创建 0 字节空库。
+    """
+    if str(path) == ":memory:":
+        return sqlite3.connect(":memory:")
+    p = Path(path)
+    if not p.is_file():
+        raise KBError(f"知识库文件不存在：{p}")
+    if read_only:
+        try:
+            return sqlite3.connect(f"{p.resolve().as_uri()}?mode=ro", uri=True)
+        except sqlite3.Error as e:
+            raise KBError(f"无法只读打开知识库 {p}：{e}") from e
+    return sqlite3.connect(p)
+
+
+def open_kb_from_config(
+    config_path: str | Path = DEFAULT_APP_CONFIG,
+    *,
+    kb_version: str | None = None,
+    artifacts_dir: str | Path | None = None,
+    overrides: dict[str, Any] | None = None,
+    read_only: bool = True,
+) -> tuple[sqlite3.Connection, Path]:
+    """按配置文件（及可选覆盖项）解析并打开指定版本的知识库，返回 (conn, kb_path)。"""
+    cfg = load_app_config(config_path, overrides=overrides)
+    kb_path = resolve_kb_path(
+        kb_version,
+        config=cfg,
+        artifacts_dir=artifacts_dir,
+    )
+    conn = open_kb(kb_path, read_only=read_only)
+    return conn, kb_path
