@@ -131,7 +131,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 ### 评测与训练
 
 - [x] T048 [P] [US1] 实现多违法行为与关联补全指标（SC-004、SC-005）、拒答与误拒指标（SC-008）、意图确认指标（SC-001：3 轮内正确确认的比例）于 `src/tu_assistant/eval/metrics.py`，并补充 `tests/unit/test_metrics.py`
-- [ ] T049 [US1] 编写评测集 v1 的多违法行为与意图确认（固定对话脚本）用例约 20 题，加入 `eval/cases/v1/`，由用户审阅确认
+- [x] T049 [US1] 编写评测集 v1 的多违法行为与意图确认（固定对话脚本）用例约 20 题，加入 `eval/cases/v1/`，由用户审阅确认
+  - 2026-11-23 经外部 DeepSeek 初审、用户逐题确认及内部 2 轮独立只读复审通过后验收完成。新增 28 道手工原创用例（`multi_violation.jsonl` 10 + `intent.jsonl` 10 + `boundaries.jsonl` 8：`refusal` 3 / `false_refusal` 2 / `exception` 3，含 Round 1 复审补全 `mv-002`《社会保险法》第八十四条），`eval/cases/v1/` 平滑扩至 98 题覆盖全部 7 类且历史基线 `reviewed.jsonl`/`articles.jsonl` 字节零改动；同步增强 `tu eval cases review / promote`、补齐 `tests/unit/test_v1_multi_intent_eval.py`（全量 `uv run pytest` 421 passed / 6 xfailed，`ruff` 全绿，T075 `output.sha256` 25/25 OK）与学习文档 `[L6.6]` / 术语表。[执行单与复审记录](../../docs/handoffs/T049-eval-cases-multi-intent-handoff.md)
 - [x] T050 [US1] 用 `configs/train/debug-1.5b.yaml` 训练，评测，跑通全流程（quickstart V4）；记录 loss 曲线与评测结果
   - 进度：已训 `exp-20261114-120250` 并完成两轮评测（引用失败），详见 `docs/experiments/E001-1.5b-citation-failure.md`
   - **订正（E002，2026-11-17）**：此前评测实测基座（未挂 adapter），结论作废。修复后重评：〔〕50/60（带 system）/ 60/60（无 system），条款召回 0.017/0.033 —— 格式已学会（run-20261117-085921 / -090638）；~~容量瓶颈属实~~（E002 §6.3 订正：1.5B 用旧数据集训练，与 7B 不是对照，只能说"表现更差"，不能归因到容量）

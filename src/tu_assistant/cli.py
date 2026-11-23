@@ -886,17 +886,41 @@ def eval_cases_review(
             encoding="utf-8",
         )
 
+    def _format_clause_ref(cid: str) -> str:
+        clause = get_clause_by_id(conn, cid)
+        doc = get_document(conn, clause.doc_id) if clause else None
+        if clause and doc:
+            return f"{doc.title}（{doc.version_label or '无版本'}）{clause.number_text} [{cid}]"
+        return f"{cid}（未在库中找到）"
+
     def show(idx: int) -> None:
         row = rows[idx]
+        source = row.get("source") or "manual"
         typer.echo(
             f"\n[{idx + 1}/{len(rows)}] {row['case_id']} "
-            f"{row['category']}（confirmed={row['confirmed']}）"
+            f"{row['category']}（source={source}，confirmed={row['confirmed']}）"
         )
         if "message" in row["input"]:
             typer.echo(f"  问题: {row['input']['message']}")
         for i, msg in enumerate(row["input"].get("script", []), 1):
             typer.echo(f"  第{i}轮: {msg}")
-        for cid in row.get("gold", {}).get("clauses", []):
+        gold = row.get("gold") or {}
+        if gold.get("intent"):
+            typer.echo(f"  预期意图: {gold['intent']}")
+        for i, v in enumerate(gold.get("violations", []), 1):
+            actor = v.get("actor", "")
+            conduct = v.get("conduct", "")
+            header = f"  违法行为[{i}] 主体={actor}"
+            if conduct:
+                header += f"｜行为={conduct}"
+            typer.echo(header)
+            if v.get("clauses"):
+                refs = "；".join(_format_clause_ref(cid) for cid in v["clauses"])
+                typer.echo(f"    适用条款: {refs}")
+            if v.get("liability"):
+                refs = "；".join(_format_clause_ref(cid) for cid in v["liability"])
+                typer.echo(f"    法律责任: {refs}")
+        for cid in gold.get("clauses", []):
             clause = get_clause_by_id(conn, cid)
             doc = get_document(conn, clause.doc_id) if clause else None
             if clause and doc:
@@ -905,11 +929,11 @@ def eval_cases_review(
                 typer.echo(f"        {clause.text}")
             else:
                 typer.echo(f"  gold: {cid}（未在库中找到）")
-        for i, line in enumerate(row.get("gold", {}).get("rubric", []), 1):
+        for i, line in enumerate(gold.get("rubric", []), 1):
             typer.echo(f"  rubric[{i}]: {line}")
-        for pn in row.get("gold", {}).get("protected_names", []):
+        for pn in gold.get("protected_names", []):
             typer.echo(f"  保护名称: {pn['name']}（第 {pn['turn']} 轮用户提供）")
-        exp = row.get("gold", {}).get("expect_articles")
+        exp = gold.get("expect_articles")
         if exp is not None:
             if isinstance(exp, list):
                 parts = "；".join(
@@ -918,7 +942,7 @@ def eval_cases_review(
                 typer.echo(f"  期望篇数: {parts}")
             else:
                 typer.echo(f"  期望篇数: {exp}")
-        if row.get("gold", {}).get("should_refuse"):
+        if gold.get("should_refuse"):
             typer.echo("  预期: 应拒答")
 
     typer.echo(
@@ -975,7 +999,7 @@ def eval_cases_promote(
         "eval/cases/v1/reviewed.jsonl", help="输出的正式评测集 JSONL"
     ),
 ) -> None:
-    """把 confirmed=true 的候选用例写入 v1，并标记 source=synthetic_reviewed。"""
+    """把 confirmed=true 的候选用例写入 v1（保留 manual/public_case，其余标为 synthetic_reviewed）。"""
     import json as _json
 
     rows = [
@@ -987,7 +1011,8 @@ def eval_cases_promote(
     for row in rows:
         if not row.get("confirmed"):
             continue
-        row["source"] = "synthetic_reviewed"
+        if row.get("source") not in {"manual", "public_case", "synthetic_reviewed"}:
+            row["source"] = "synthetic_reviewed"
         row.pop("confirmed", None)
         kept.append(row)
     out_path = Path(out)

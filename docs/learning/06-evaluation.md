@@ -174,3 +174,31 @@ uv run tu eval report <run_id> --reviews <评审表.csv>
 2. **单侧无分母陷阱**：如果同一模型第一次评测产出 1 处有效引用、第二次产出 0 处（导致某项指标一侧为数值、一侧为 `None`），这本身就是显著不稳定，不能过滤 `None` 算成 `0.0 pp`，必须直接判 `FAIL`。
 
 实现：`src/tu_assistant/eval/compare.py`、`tu eval compare`（T076 + T062）。
+
+## [L6.6] 评测集怎么设计才测出真能力：多违法行为、多轮意图脚本与“防正则自证”
+
+在 T049 中，我们把 `eval/cases/v1/` 从 70 题扩充到 98 题（新增 `multi_violation.jsonl` 10 题、`intent.jsonl` 10 题、`boundaries.jsonl` 8 题，覆盖全部 7 个类别）。看似只是“写 28 道题”，背后却有四个直接决定评测有没有效的工程与统计原则：
+
+### 1. 为什么不能复述训练模板（防泄漏与 3-gram 去重）
+
+如果评测题长得和训练合成模板几乎一样，模型靠死记模板就能拿高分，评测就失去了区分“真理解”与“背过题”的意义（宪章原则 V）。因此 T049 采用手工原创（`source="manual"`）并逐条核对知识库原文，再统一用字符级 3-gram Jaccard（`dedup_against_eval(..., overlap=0.8)`）对既有 v1 70 题、文章提示词模板池以及全部历史训练集（`ds-8410`、`ds-8247` 的 `train.jsonl` + `valid.jsonl`）做去重校验，确认高重合数为 **0**。
+
+### 2. 测量工具与安全护栏的张力：“防正则自证”
+
+翻看 `src/tu_assistant/chat/anonymize.py` 的 `classify_turn_intent` 与 `src/tu_assistant/eval/metrics.py` 的 `intent_score`，会发现一个很微妙的交互：
+
+- **第 1 轮必须“零触发词”**：`classify_turn_intent` 会先用正则检查用户消息是否包含显式词（如“合法吗”“违法吗”“怎么办”“有什么法律责任”“写一篇普法文章”）。如果一道 `intent` 题的第 1 轮模糊开场不小心写了“这样合法吗”，**第 1 轮用户消息本身就会把 `session.intent` 直接置为 `"consult"`**——哪怕模型根本没理解意图，SC-001 也会被正则“伪确认”成 1.0！因此所有 `intent` 题的第 1 轮都必须经过 `classify_user_intent_signals(t1, article_task_active=False)` 校验 5 项信号全 `False`。
+- **咨询收敛轮不靠正则走捷径**：对于 `gold.intent="consult"` 的第 2/3 轮，同样避免触发 `_RE_EXPLICIT_CONSULT`（改用“我想了解相关的法律规定，具体情况是……”等自然表达），迫使 `session.intent` 必须靠模型实际输出咨询结构（`违法行为认定/适用条款/法律责任`）或有效条款引用才转为 `"consult"`。
+- **隐私护栏优先于测量便利（诚实记录边界）**：当用户在中途切换题（`intent-008..010`）里明说“帮我写一篇普法文章”时，T054 隐私脱敏护栏为了确保 FR-030“宁严勿漏”，会立即触发 `_RE_EXPLICIT_WRITE` 将 `intent` 切为 `"article"`。我们**不能为了评测指标去削弱隐私护栏**，因此诚实记录这一测量边界：这类题的自动 `SC-001` 只验证切换触发，真正是否按以案说法结构交付文章、是否正确引条与虚构主体，必须结合逐题 `rubric` 人工复核。
+
+### 3. 为什么 `multi_violation` 的 `gold.clauses` 要并入 `violations[].liability`
+
+在 `eval/runner.py` 中，同一道 `multi_violation` 题会同时算四个指标：`SC-004`（多违法行为识别率）、`SC-005`（关联责任补全率）、`SC-002`（召回率）和 `SC-003`（精确率）。如果 `gold.clauses` 只写实体行为条款、漏掉对应的法律责任条款，就会出现荒唐的“惩罚好模型”现象——模型按要求补全了法律责任条款（SC-005 升高），却被 SC-003 判成“多引了无关条款”而扣分！因此每道 `multi_violation` 题都通过单元测试强制要求：`set(gold.clauses) == union(v["clauses"] ∪ v["liability"])`。
+
+### 4. 目录型平滑扩题：既补齐 7 类全指标，又不破坏历史基线
+
+- 既有历史基线 `eval/cases/v1/reviewed.jsonl`（60 题，T076 `--sc016` 直接绑定）与 `eval/cases/v1/articles.jsonl`（10 题）保持**字节零改动**；
+- `load_cases("eval/cases/v1")` 按 `sorted(p.glob("*.jsonl"))` 加载目录下全部 `.jsonl`，新增 3 个独立文件即平滑把 v1 从 70 题扩充至 98 题；
+- 配合 T062 的子集对齐规则（`run.rows ⊆ chk.case_ids`），历史 70 题目录型评测仍可正常对比，而后续 T064 跑 7B 重复评测时一次就能产出覆盖 SC-001 ~ SC-011 全指标的完整报告。
+
+实现：`eval/cases/v1/{multi_violation,intent,boundaries}.jsonl`、`src/tu_assistant/cli.py`（`tu eval cases review / promote` 增强）、`tests/unit/test_v1_multi_intent_eval.py`（T049）。
