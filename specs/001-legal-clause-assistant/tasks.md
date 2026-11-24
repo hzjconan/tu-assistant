@@ -228,7 +228,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [ ] T072 [P] 更新 `README.md`：项目简介、环境准备、常用命令、文档索引
 - [x] T073 撰写 `docs/learning/07-serving-demo.md`：模型服务、对话编排、演示界面、训练与演示不能同时进行的原因；更新术语表
   - 2026-11-24 经内部 2 轮独立只读复审通过并获用户确认验收。按 `1A 2A 3A` 收口 `docs/learning/07-serving-demo.md`（章首逻辑阅读导航、保留 `[L7.1]`–`[L7.2]`、修补 `[L7.3]` 3 处瑕疵并补录实测 adapter 体积 `77.04 MB` / `20.15 MB`、新增 `[L7.4]` 模型服务与三层运行时隔离、`[L7.5]` 对话编排 10 步 Mermaid 流水线与 T071 实机延迟对照、`[L7.6]` M1 Pro 32GB 训练与演示互斥四维拆解、`[L7.7]` 7 道延展提问），在 `docs/learning/00-glossary.md` 新增 `## 推理与演示` 8 条术语分区并将 `docs/learning/README.md` 第 7 章标为 `✅`；`verify_t073.py`（132 链接 0 断链、17/17 源码链接与符号通过）、全量 `pytest`（462 passed / 6 xfailed）、`ruff` 与 T075 `output.sha256`（25/25 OK）全绿。[执行单与复审记录](../../docs/handoffs/T073-serving-demo-learning-handoff.md)
-- [ ] T074 撰写 `docs/learning/08-lessons-and-next.md`：踩坑汇总、POC 说明了什么与没说明什么（含校验前引用准确率的解读）、正式阶段事项（research R12）
+- [x] T074 撰写 `docs/learning/08-lessons-and-next.md`：踩坑汇总、POC 说明了什么与没说明什么（含校验前引用准确率的解读）、正式阶段事项（research R12）
+  - 2026-11-24 经内部 2 轮独立只读复审通过并获用户确认验收。按 `1A 2A 3A` 新增全项目复盘终章 `docs/learning/08-lessons-and-next.md`（`[L8.1]` 6 类 20 项踩坑与 5 条铁律、`[L8.2]` 回扣 `[L1.8]` 的 POC 边界实证、`[L8.3]` 跨 5 组真实 run 的 `SC-007` 对照与四联看板、`[L8.4]` `T078` 完整档案与其余 5 项限制登记、`[L8.5]` R12 全 15 项清单与 Mermaid 决策关卡、`[L8.6]` 01–08 复习速览、`[L8.7]` 6 道延展提问），同步在 `docs/learning/00-glossary.md` 新增 `## 复盘与演进` 5 条术语与 2 条跨章回链，并将 `docs/learning/README.md` 第 8 章标为 `✅`（01–08 全套学习文档收口）；`verify_t074.py`（172 链接 0 断链、0 `file://`、0 `artifacts/` 相对链接）、全量 `pytest`（462 passed / 6 xfailed）、`ruff` 与 T075 `output.sha256`（25/25 OK）全绿。[执行单与复审记录](../../docs/handoffs/T074-lessons-and-next-handoff.md)
 
 ---
 
