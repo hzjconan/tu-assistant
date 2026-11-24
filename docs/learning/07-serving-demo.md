@@ -82,8 +82,85 @@ Web 服务进程是常驻的，不能像 CLI 那样靠进程退出自动丢弃�
 
 ---
 
+## [L7.3] 基于底座模型加载训练后权重：动态挂载 Adapter vs 合并权重（Fuse）
+
+用 LoRA / QLoRA 微调结束后，训练目录（如 `artifacts/train/<exp>/adapters/`）里保存的**不是一个完整的新模型**，而是体积很小的**增量补丁（adapter）**。要让它真正跑起来，必须把它和原始底座模型（如 `mlx-community/Qwen2.5-7B-Instruct-4bit`）组合加载。
+
+### 1. 训练产物里到底有什么？
+
+进入任意一次训练的 `adapters/` 目录，通常只有两类核心文件：
+- `adapter_config.json`：记录 LoRA 的结构元数据，比如 `rank`（秩 $r$）、`scale`（缩放系数 $\alpha/r$）、注入了哪些层（`num_layers`）等；加载器需要靠它先在底座模型的对应线性层旁搭好低秩分支的架子。
+- `adapters.safetensors`（以及各 checkpoint 如 `0000100_adapters.safetensors`）：只存低秩矩阵 $A$ 和 $B$ 的参数权重，体积通常只有几十 MB（对比 4bit 7B 底座的 ~4.3 GB）。
+
+前向推理时，每一处挂载了 LoRA 的线性层等价于：
+
+$$y = W_0 x + \text{scale} \cdot B(A x)$$
+
+其中 $W_0$ 是冻结的底座权重，$A, B$ 是训练得到的增量权重。如果底座换成了别的版本或架构不匹配，形状或语义对不上，加载就会直接报错或输出乱码。
+
+### 2. 两种加载方式：动态挂载 vs 合并权重（Fuse）
+
+在 `mlx-lm` 生态里，基于底座模型使用训练后权重有两种主流做法：
+
+| 维度 | 方式 A：动态挂载（`--adapter-path` / `adapter_path`） | 方式 B：合并权重（`mlx_lm.fuse`） |
+|---|---|---|
+| **原理** | 启动时先加载只读底座 $W_0$，再把 $A, B$ 挂到对应层上，推理时实时计算 $W_0 x + \text{scale}\cdot B(Ax)$ | 离线把增量加回底座：$W' = W_0 + \text{scale}\cdot BA$，导出为一个**独立的新模型目录** |
+| **磁盘占用** | 极小：多个实验共用同一份本地底座缓存，每个实验只占几十 MB | 较大：每合并一次就多出一份完整模型（7B 4bit 约 4.3 GB） |
+| **推理延迟** | 略有一点点额外矩阵乘开销（对本机 POC 基本无感） | 零额外分支开销，与原生底座推理完全一致 |
+| **量化注意点** | 底座保持 4bit 量化，LoRA 分支以 fp16/bf16 计算，不损失底座量化精度 | 对 4bit 量化底座执行 fuse 时，需先反量化 → 相加 → 再重新量化（`--de-quantize` 或重定量），可能引入轻微再量化误差 |
+| **适用场景** | **实验迭代、A/B 对比、多版本快速切换**（本项目 POC 当前采用） | **正式发布、脱离训练目录独立部署**，或交给不支持动态挂 LoRA 的推理引擎 |
+
+常用命令与 Python API 对照：
+
+```bash
+# 方式 A1：命令行直接做单次生成测试（动态挂载）
+uv run python -m mlx_lm.generate \
+  --model mlx-community/Qwen2.5-7B-Instruct-4bit \
+  --adapter-path artifacts/train/<exp>/adapters \
+  --prompt "劳动合同试用期最长可以约定多久？"
+
+# 方式 A2：启动 OpenAI 兼容 HTTP 服务（动态挂载，本项目 tu serve model 底层即此命令）
+uv run python -m mlx_lm.server \
+  --model mlx-community/Qwen2.5-7B-Instruct-4bit \
+  --adapter-path artifacts/train/<exp>/adapters \
+  --host 127.0.0.1 --port 8080
+
+# 方式 B：合并权重，产出独立模型目录（适合发布交付）
+uv run python -m mlx_lm.fuse \
+  --model mlx-community/Qwen2.5-7B-Instruct-4bit \
+  --adapter-path artifacts/train/<exp>/adapters \
+  --save-path artifacts/fused/<exp>
+```
+
+在 Python 脚本中直接加载并推理：
+
+```python
+from mlx_lm import load, generate
+
+# 动态挂载：同时传入底座名/本地路径 + adapter 目录
+model, tokenizer = load(
+    "mlx-community/Qwen2.5-7B-Instruct-4bit",
+    adapter_path="artifacts/train/<exp>/adapters",
+)
+text = generate(model, tokenizer, prompt="...", max_tokens=256)
+```
+
+### 3. 本项目 `tu serve model` 是怎么串起来的？
+
+本项目采用**动态挂载**路线，把加载细节封装在 [cli.py](file:///Users/hzjconan/workspace/tu-assistant/src/tu_assistant/cli.py#L400-L441) 的 `tu serve model --exp <exp>` 中：
+1. 读取 `artifacts/train/<exp>/manifest.json` 里的 `config.base_model`，确保底座模型与训练时严格一致；
+2. 检查 `artifacts/train/<exp>/adapters` 目录存在；
+3. 写入 `artifacts/serve/current.json`，记录 `model="default_model"`、`base_model`、`exp` 和 `endpoint`，供上游的 `tu chat`、`tu ui` 和评测脚本自动读取并做可追溯记录；
+4. 启动 `mlx_lm.server --model <base_model> --adapter-path <adapter>`，仅监听本机 `127.0.0.1`。
+
+> [!IMPORTANT]
+> 使用 `mlx_lm.server` 动态挂载时，客户端发请求体里的 `model` 字段必须传 `"default_model"`，才会命中 `--adapter-path` 挂载的微调模型；如果传了具体底座名，服务端会重新加载一个**不带 adapter 的裸底座**（详见 [L5.11](05-training.md#l511-评测前先确认测的是你的模型e002-实录) 的真实踩坑记录）。
+
+---
+
 ### 可以继续问的问题
 
 - 为什么在正则解析里要专门排除“写了 15 篇文章”和“修改第 2 篇”？中文自然语言规则护栏的常见误伤类型有哪些？
 - 如果未来正式阶段改成“编排层按篇循环”，每篇的脱敏状态和 `raw_content` 评测口径应该怎么设计？
 - `gr.Blocks(delete_cache=(600, 7200))` 的过期时长为什么既不能设太短（如 5 分钟）也不能无限大？在现场演示体验与本地隐私留存之间如何权衡？
+- 对 4bit 量化底座执行 `mlx_lm.fuse` 时，反量化再重新量化具体会带来什么影响？什么时候值得保留 fp16 底座再 fuse？
