@@ -226,7 +226,8 @@ description: "Task list for 001-legal-clause-assistant (POC)"
 - [x] T071 [P] 运行 quickstart.md 全部验证场景（V1–V7），记录结果
   - 2026-11-24 经内部 2 轮独立只读复审通过并获用户确认验收。落盘 `docs/experiments/T071-quickstart-verification.md` 并在 `docs/experiments/README.md` 补录索引，完整覆盖 V1–V7 + US4 全部 8 个场景（V1 `457 passed / 6 xfailed`、V2 `/tmp` 隔离入库 3,809 条 0 差异且零正文泄漏、V3 `4 passed`、V4 1.5B 清单与实机 `tu chat /save` 6,621 B、V5 7B 现行代码只读复跑 `tu eval report` / `--sc015` `0.0 pp` PASS / `--sc016` PASS、V6 7B + `tu ui --temperature 0.0` `gradio_client` 黄金主线 Step 1–6 全通并按用户拍板如实记录 Step 4 第 2 轮路线 A 压缩边界、V7 `106 passed` + `SC-011=2/2`、US4 `1 passed` + `tu kb diff`）；全量 `pytest` 462 passed / 6 xfailed，`ruff` 全绿，4 份历史 KB 与 T075 `output.sha256` 25/25 OK，`current.json` 指向 `exp-20261116-resume500`，端口零残留。[执行单与复审记录](../../docs/handoffs/T071-quickstart-verification-handoff.md)
 - [ ] T072 [P] 更新 `README.md`：项目简介、环境准备、常用命令、文档索引
-- [ ] T073 撰写 `docs/learning/07-serving-demo.md`：模型服务、对话编排、演示界面、训练与演示不能同时进行的原因；更新术语表
+- [x] T073 撰写 `docs/learning/07-serving-demo.md`：模型服务、对话编排、演示界面、训练与演示不能同时进行的原因；更新术语表
+  - 2026-11-24 经内部 2 轮独立只读复审通过并获用户确认验收。按 `1A 2A 3A` 收口 `docs/learning/07-serving-demo.md`（章首逻辑阅读导航、保留 `[L7.1]`–`[L7.2]`、修补 `[L7.3]` 3 处瑕疵并补录实测 adapter 体积 `77.04 MB` / `20.15 MB`、新增 `[L7.4]` 模型服务与三层运行时隔离、`[L7.5]` 对话编排 10 步 Mermaid 流水线与 T071 实机延迟对照、`[L7.6]` M1 Pro 32GB 训练与演示互斥四维拆解、`[L7.7]` 7 道延展提问），在 `docs/learning/00-glossary.md` 新增 `## 推理与演示` 8 条术语分区并将 `docs/learning/README.md` 第 7 章标为 `✅`；`verify_t073.py`（132 链接 0 断链、17/17 源码链接与符号通过）、全量 `pytest`（462 passed / 6 xfailed）、`ruff` 与 T075 `output.sha256`（25/25 OK）全绿。[执行单与复审记录](../../docs/handoffs/T073-serving-demo-learning-handoff.md)
 - [ ] T074 撰写 `docs/learning/08-lessons-and-next.md`：踩坑汇总、POC 说明了什么与没说明什么（含校验前引用准确率的解读）、正式阶段事项（research R12）
 
 ---
