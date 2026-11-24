@@ -12,3 +12,4 @@
 | [E003](./E003-memorization-vs-exposure.md)（[执行记录](./E003-run-log.md)） | 曝光不足还是容量不足：原题记忆测试、追加训练 | 已收尾 |
 | [POC 训练收尾](./poc-training-summary.md) | POC 训练目标判定、POC 下一步、正式阶段的判断 | 待审阅 |
 | [T064 重复评测（SC-015）](./T064-eval-repeatability.md) | 7B 演示模型两轮独立冷启动 98 题评测、DeepSeek 初审 + 人工终审与 SC-015 判定（`0.0 pp` PASS） | 已完成 |
+| [T071 Quickstart 全量验证（V1–V7 + US4）](./T071-quickstart-verification.md) | 运行 `quickstart.md` 全部验证场景（V1–V7 + US4），含 V2 隔离入库、V4 1.5B `tu chat`、V5 只读复验与 V6 7B 黄金主线实机验证 | 已完成 |
